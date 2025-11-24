@@ -34,6 +34,30 @@ dependencies:
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
+  # --- AUDIRE Core Dependencies ---
+
+  # 1. Text to Speech (The Voice)
+  # [cite_start]Handles voice selection and speed adjustment [cite: 4, 5]
+  flutter_tts: ^4.0.2
+
+  # 2. File & Permission Handling
+  # [cite_start]To pick files and access storage [cite: 8]
+  file_picker: ^8.0.0
+  permission_handler: ^11.3.0
+  path_provider: ^2.1.2
+
+  # 3. Text Extraction (The Reader)
+  # [cite_start]To read text from PDF files [cite: 2]
+  # We start with PDF as it's the most common complex format.
+  read_pdf_text: ^0.3.1
+
+  # 4. State Management & Storage
+  # [cite_start]To save user preferences (speed, voice) and dictionary data offline [cite: 5, 7]
+  shared_preferences: ^2.2.2
+  
+  # Optional: To handle .docx files (Microsoft Word)
+  docx_to_text: ^1.0.1
+
 
 dev_dependencies:
   flutter_test:
@@ -87,3 +111,5 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+
+  
