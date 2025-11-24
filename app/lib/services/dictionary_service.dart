@@ -1,35 +1,42 @@
+import 'dart:convert';
+import 'package:flutter/services.dart';
+
 class DictionaryService {
-  // A "Starter Pack" of definitions for the offline demo.
-  // In the future, we will replace this map with a proper SQLite database query.
-  static final Map<String, String> _offlineDatabase = {
-    "audire": "Latin verb meaning 'to hear'. The name of this application.",
-    "audio": "Sound, especially when recorded, transmitted, or reproduced.",
-    "algorithm": "A process or set of rules to be followed in calculations or other problem-solving operations.",
-    "book": "A written or printed work consisting of pages glued or sewn together along one side and bound in covers.",
-    "code": "A system of words, letters, figures, or other symbols substituted for other words, letters, etc., especially for secrecy.",
-    "computer": "An electronic device for storing and processing data.",
-    "flutter": "An open-source UI software development kit created by Google.",
-    "internet": "A global computer network providing a variety of information and communication facilities.",
-    "mobile": "Able to move or be moved freely or easily.",
-    "offline": "Not connected to a computer or computer network.",
-    "pdf": "Portable Document Format, a file format that provides an electronic image of text or text and graphics.",
-    "read": "Look at and comprehend the meaning of (written or printed matter) by mentally interpreting the characters or symbols of which it is composed.",
-    "zambia": "A landlocked country in southern Africa.",
-    "technology": "The application of scientific knowledge for practical purposes.",
-    "voice": "The sound produced in a person's larynx and uttered through the mouth, as speech or song.",
-  };
+  static Map<String, dynamic>? _database;
+  static bool _isLoading = false;
 
-  /// Looks up a word in the local database.
-  /// Returns the definition or null if not found.
-  static Future<String?> getDefinition(String word) async {
-    // Simulate a database delay for realism (optional)
-    await Future.delayed(const Duration(milliseconds: 100));
+  /// Loads the full dictionary JSON from assets into memory.
+  static Future<void> loadDatabase() async {
+    if (_database != null) return; 
+    if (_isLoading) return; 
 
-    String lookup = word.toLowerCase().trim();
+    _isLoading = true;
     
-    // Check exact match
-    if (_offlineDatabase.containsKey(lookup)) {
-      return _offlineDatabase[lookup];
+    try {
+      // 1. Load the huge string from the file
+      final String jsonString = await rootBundle.loadString('assets/dictionary.json');
+      
+      // 2. Parse the JSON string into a Map
+      _database = json.decode(jsonString);
+    } catch (e) {
+      print("Error loading dictionary: $e");
+      _database = {};
+    } finally {
+      _isLoading = false;
+    }
+  }
+
+  /// Looks up a word in the loaded database.
+  static Future<String?> getDefinition(String word) async {
+    if (_database == null) {
+      await loadDatabase();
+    }
+
+    // The 'adambom' dictionary uses UPPERCASE keys (e.g., "ZEBRA")
+    String lookup = word.toUpperCase().trim();
+    
+    if (_database != null && _database!.containsKey(lookup)) {
+      return _database![lookup].toString();
     }
     
     return null; 
