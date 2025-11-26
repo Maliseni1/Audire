@@ -1,10 +1,12 @@
 import 'dart:convert';
 import 'package:flutter/services.dart';
+import 'package:google_mlkit_translation/google_mlkit_translation.dart'; // ML Kit
 
 class TranslationService {
   static Map<String, dynamic>? _phrasebook;
+  static final _modelManager = OnDeviceTranslatorModelManager();
   
-  /// Loads the phrasebook JSON from assets
+  /// Loads the phrasebook JSON from assets (For Zambian Languages)
   static Future<void> loadPhrasebook() async {
     if (_phrasebook != null) return;
     try {
@@ -16,37 +18,76 @@ class TranslationService {
     }
   }
 
-  /// Translates text word-by-word (Hybrid Approach)
+  /// Main Translation Function - The "Smart Switch"
   static Future<String> translate(String text, String langCode) async {
-    // 1. Initialize
-    if (_phrasebook == null) await loadPhrasebook();
-    
-    // 2. If English is selected, return original
+    // 1. English (No translation needed)
     if (langCode == 'en') return text; 
 
-    // 3. Get the dictionary for the target language (bem or nya)
+    // 2. Zambian Languages (Use Phrasebook)
+    if (['bem', 'nya'].contains(langCode)) {
+      return _translatePhrasebook(text, langCode);
+    }
+
+    // 3. Major Languages (Use ML Kit)
+    TranslateLanguage? targetLang;
+    if (langCode == 'fr') targetLang = TranslateLanguage.french;
+    if (langCode == 'es') targetLang = TranslateLanguage.spanish;
+
+    if (targetLang != null) {
+      return _translateWithMLKit(text, targetLang);
+    }
+
+    return text; // Fallback to original if language not supported
+  }
+
+  // --- ENGINE 1: PHRASEBOOK (Zambian) ---
+  static Future<String> _translatePhrasebook(String text, String langCode) async {
+    if (_phrasebook == null) await loadPhrasebook();
+    
     Map<String, dynamic> dictionary = _phrasebook?[langCode] ?? {};
     if (dictionary.isEmpty) return text;
 
-    // 4. Word-Swap Logic
-    // Split text into words, preserving spaces is tricky, 
-    // so we'll do a simple split by space for this MVP.
+    // Simple word replacement logic
     List<String> words = text.split(' ');
     List<String> translatedWords = [];
 
     for (String word in words) {
-      // Clean punctuation (e.g., "Hello," -> "hello") to find match
+      // Normalize word to match dictionary keys (remove punctuation, lowercase)
       String cleanWord = word.replaceAll(RegExp(r'[^\w\s]'), '').toLowerCase();
       
       if (dictionary.containsKey(cleanWord)) {
-        // Match found! Use the translated word
         translatedWords.add(dictionary[cleanWord]);
       } else {
-        // No match found, keep the original English word
         translatedWords.add(word);
       }
     }
-
     return translatedWords.join(' ');
+  }
+
+  // --- ENGINE 2: ML KIT (French/Spanish) ---
+  static Future<String> _translateWithMLKit(String text, TranslateLanguage target) async {
+    try {
+      // 1. Check if model is downloaded
+      final bool isDownloaded = await _modelManager.isModelDownloaded(target.bcpCode);
+      
+      if (!isDownloaded) {
+        // Download it (requires internet first time)
+        print("Downloading model for ${target.bcpCode}...");
+        await _modelManager.downloadModel(target.bcpCode);
+      }
+
+      // 2. Translate
+      final translator = OnDeviceTranslator(
+        sourceLanguage: TranslateLanguage.english, 
+        targetLanguage: target
+      );
+      
+      final String response = await translator.translateText(text);
+      await translator.close();
+      
+      return response;
+    } catch (e) {
+      return "Translation Error: $e (Check internet for first-time download)";
+    }
   }
 }

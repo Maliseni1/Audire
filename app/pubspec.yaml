@@ -25,19 +25,24 @@ dependencies:
 
   # 3. Text Extraction
   read_pdf_text: ^0.3.1
+  docx_to_text: ^1.0.1
+  
+  # ML Kit (OCR & Translation) - Versions aligned to share dependencies
+  google_mlkit_text_recognition: ^0.14.0
+  google_mlkit_translation: ^0.12.0
 
   # 4. State Management & Storage
   shared_preferences: ^2.2.2
   
-  # Optional: DOCX support
-  docx_to_text: ^1.0.1
+  # 5. Audio & Background Playback
+  audio_session: ^0.1.21
+  audio_service: ^0.18.12  # Required for Notification Bar Controls
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
 
   flutter_lints: ^5.0.0
-
   flutter_launcher_icons: ^0.13.1
 
 flutter_launcher_icons:
@@ -49,8 +54,7 @@ flutter_launcher_icons:
 flutter:
   uses-material-design: true
 
-  # --- ASSETS REGISTERED HERE ---
   assets:
     - assets/icon.png
     - assets/dictionary.json
-    - assets/phrasebook.json  # <--- NEW: Added for Translation Feature
+    - assets/phrasebook.json

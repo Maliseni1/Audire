@@ -7,16 +7,25 @@ class FileScanner {
     '/storage/emulated/0/Download',
     '/storage/emulated/0/Documents',
     '/storage/emulated/0/Books',
-    // You can add more paths here if needed
+    '/storage/emulated/0/DCIM/Camera', // Added to find photos for OCR
+    '/storage/emulated/0/Pictures',    // Added standard Pictures folder
   ];
 
-  static final List<String> _allowedExtensions = ['.pdf', '.txt', '.docx'];
+  // Updated list of allowed file types
+  static final List<String> _allowedExtensions = [
+    '.pdf', 
+    '.txt', 
+    '.docx', // Word Documents
+    '.jpg',  // Images
+    '.jpeg', // Images
+    '.png'   // Images
+  ];
 
   /// Scans the device for compatible files
   static Future<List<FileSystemEntity>> scanDeviceForFiles() async {
     List<FileSystemEntity> foundFiles = [];
 
-    // 1. CHECK PERMISSIONS RIGOROUSLY
+    // 1. CHECK PERMISSIONS
     // Android 11+ (SDK 30+) requires MANAGE_EXTERNAL_STORAGE
     if (await Permission.manageExternalStorage.request().isGranted) {
       // Permission granted for Android 11+
@@ -48,6 +57,15 @@ class FileScanner {
           print("Skipping access to $path: $e");
         }
       }
+    }
+    
+    // Sort files by date modified (newest first) for better UX
+    try {
+      foundFiles.sort((a, b) {
+        return b.statSync().modified.compareTo(a.statSync().modified);
+      });
+    } catch (e) {
+      // Ignore sort errors
     }
     
     return foundFiles;
