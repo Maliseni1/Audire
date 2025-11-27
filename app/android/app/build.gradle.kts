@@ -10,12 +10,13 @@ android {
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 
     kotlinOptions {
-        jvmTarget = "1.8"
+        // CHANGED: Set this to 17 to match the Java version above
+        jvmTarget = "17"
     }
 
     defaultConfig {
@@ -28,13 +29,9 @@ android {
 
     buildTypes {
         release {
-            // Kotlin DSL uses 'is' prefix for booleans and '=' for assignment
             isMinifyEnabled = true
             isShrinkResources = true
-            
-            // Kotlin requires double quotes " " for strings and parentheses ( ) for functions
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            
             signingConfig = signingConfigs.getByName("debug")
         }
     }

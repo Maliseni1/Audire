@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/history_service.dart';
 import 'reader_screen.dart';
-//import 'package:timeago/timeago.dart' as timeago; // Optional utility, but we'll do simple date formatting manually to save dependencies
 
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
@@ -36,7 +35,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
       MaterialPageRoute(
         builder: (context) => ReaderScreen(filePath: path, fileName: name),
       ),
-    ).then((_) => _loadHistory()); // Refresh when coming back
+    ).then((_) => _loadHistory()); // Refresh list when coming back
   }
 
   Future<void> _clearHistory() async {
@@ -44,8 +43,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
     _loadHistory();
   }
 
+  // Simple date formatter helper
   String _formatDate(int timestamp) {
     DateTime date = DateTime.fromMillisecondsSinceEpoch(timestamp);
+    // Format: DD/MM HH:MM (e.g., 26/11 14:30)
     return "${date.day}/${date.month} ${date.hour}:${date.minute.toString().padLeft(2, '0')}";
   }
 
@@ -86,12 +87,16 @@ class _HistoryScreenState extends State<HistoryScreen> {
                           backgroundColor: Colors.deepPurple,
                           child: Icon(Icons.bookmark, color: Colors.white, size: 20),
                         ),
-                        title: Text(item['name'], maxLines: 1, overflow: TextOverflow.ellipsis),
+                        title: Text(
+                          item['name'] ?? "Unknown File", 
+                          maxLines: 1, 
+                          overflow: TextOverflow.ellipsis
+                        ),
                         subtitle: Text(
-                          "Played ${_formatDate(item['timestamp'])}",
+                          "Last read: ${_formatDate(item['timestamp'] ?? 0)}",
                           style: const TextStyle(fontSize: 12),
                         ),
-                        trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                        trailing: const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey),
                         onTap: () => _openReader(item['path'], item['name']),
                       ),
                     );
