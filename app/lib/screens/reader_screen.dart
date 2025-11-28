@@ -1,19 +1,21 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart'; 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart'; // REQUIRED for TapGestureRecognizer
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:read_pdf_text/read_pdf_text.dart';
 import 'package:docx_to_text/docx_to_text.dart'; 
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:path_provider/path_provider.dart'; 
 import 'package:audio_session/audio_session.dart'; 
-import 'package:audio_service/audio_service.dart'; // NEW IMPORTS
+import 'package:audio_service/audio_service.dart';
 import 'dart:io';
 import 'dart:async'; 
 import '../services/translation_service.dart';
 import '../services/history_service.dart';
-import '../services/audio_manager.dart'; // Import our new manager
+import '../services/dictionary_service.dart';
+import '../services/audio_manager.dart';
 
-// --- WORKERS ---
+// --- BACKGROUND WORKERS ---
 String _backgroundCleanText(String text) => text.replaceAll(RegExp(r'\s+'), ' ').trim();
 
 List<String> _backgroundPagination(String text) {
@@ -55,9 +57,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
   final FlutterTts _flutterTts = FlutterTts();
   final ScrollController _scrollController = ScrollController();
   
-  // Audio Handler (Notification Control)
   TtsAudioHandler? _audioHandler;
   StreamSubscription? _playbackSubscription;
+  StreamSubscription? _eventSubscription;
 
   String _fullOriginalText = ""; 
   List<String> _pages = [];
@@ -91,31 +93,39 @@ class _ReaderScreenState extends State<ReaderScreen> {
   void dispose() {
     _flutterTts.stop();
     _playbackSubscription?.cancel();
+    _eventSubscription?.cancel();
     _debounce?.cancel();
     _scrollController.dispose();
     HistoryService.saveProgress(widget.filePath, widget.fileName, _currentPageIndex * 3000);
     super.dispose();
   }
 
-  // --- SETUP: AUDIO & NOTIFICATIONS ---
   Future<void> _setupAudioSystem() async {
-    // 1. Init Session (Keep screen/audio alive)
     final session = await AudioSession.instance;
-    await session.configure(const AudioSessionConfiguration.speech());
-
-    // 2. Init Notification Handler
+    await session.configure(const AudioSessionConfiguration.music());
+    
+    // 1. Init Handler
     _audioHandler = await TtsAudioHandler.init();
     
-    // 3. Listen to Lock Screen Controls
+    // 2. Set Initial Notification State
+    _audioHandler?.setMediaItem(widget.fileName, Duration.zero);
+    _audioHandler?.setPlaybackState(isPlaying: false);
+
+    // 3. Listen to Play/Pause Controls
     _playbackSubscription = _audioHandler?.playbackState.listen((state) {
       if (state.playing && !_isPlaying) {
-        _playCurrentPage(); // Resume triggered from lock screen
+        _playCurrentPage(); 
       } else if (!state.playing && _isPlaying) {
-        _pausePlayback(); // Pause triggered from lock screen
+        _pausePlayback(); 
       }
     });
 
-    // 4. Init TTS
+    // 4. Listen to Seek Controls (Rewind/FastForward)
+    _eventSubscription = _audioHandler?.customEvent.listen((event) {
+      if (event == 'fastForward') _skipForward();
+      if (event == 'rewind') _skipBackward();
+    });
+
     await _flutterTts.awaitSpeakCompletion(true);
     await _flutterTts.setSpeechRate(_speechRate);
     await _flutterTts.setPitch(_pitch);
@@ -148,12 +158,33 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _initVoices();
   }
 
+  Future<void> _initVoices() async {
+    await Future.delayed(const Duration(milliseconds: 500));
+    try {
+      final voices = await _flutterTts.getVoices;
+      if (voices == null) return;
+
+      const allowedCodes = ['en', 'fr', 'es'];
+      List<Map<String, String>> cleanVoices = [];
+      
+      for (var voice in voices) {
+        Map<Object?, Object?> rawMap = voice as Map<Object?, Object?>;
+        if (rawMap.containsKey("name") && rawMap.containsKey("locale")) {
+          String locale = rawMap["locale"].toString().toLowerCase();
+          if (allowedCodes.any((code) => locale.startsWith(code))) {
+            cleanVoices.add({
+              "name": rawMap["name"].toString(),
+              "locale": rawMap["locale"].toString(),
+            });
+          }
+        }
+      }
+      if (mounted) setState(() { _voices = cleanVoices; });
+    } catch (e) { print("Error fetching voices: $e"); }
+  }
+
   String _formatVoiceName(String rawName, String locale) {
-    Map<String, String> langs = {
-      'en': 'English', 'fr': 'French', 'es': 'Spanish', 'de': 'German',
-      'it': 'Italian', 'pt': 'Portuguese', 'ru': 'Russian', 'zh': 'Chinese',
-      'ja': 'Japanese', 'bem': 'Bemba', 'nya': 'Nyanja'
-    };
+    Map<String, String> langs = {'en': 'English', 'fr': 'French', 'es': 'Spanish'};
     String langCode = locale.split('-')[0].toLowerCase();
     String displayLang = langs[langCode] ?? langCode.toUpperCase();
     if (locale.contains('-')) {
@@ -163,7 +194,24 @@ class _ReaderScreenState extends State<ReaderScreen> {
     return displayLang;
   }
 
-  // ... (File Loading / Extraction Logic - No Changes needed here) ...
+  Map<String, dynamic> _getVoiceDisplayInfo(String rawName, String locale) {
+    String lowerName = rawName.toLowerCase();
+    String label = "";
+    IconData icon = Icons.record_voice_over;
+
+    if (lowerName.contains("female") || lowerName.contains("-f-") || lowerName.contains("woman")) {
+      label = "Woman's Voice";
+      icon = Icons.face_3;
+    } else if (lowerName.contains("male") || lowerName.contains("-m-") || lowerName.contains("man")) {
+      label = "Man's Voice";
+      icon = Icons.face;
+    }
+
+    String prettyName = _formatVoiceName(rawName, locale);
+    String title = label.isNotEmpty ? "$label - $prettyName" : prettyName;
+    return {"title": title, "subtitle": locale, "icon": icon};
+  }
+
   Future<void> _loadOrExtractText() async {
     setState(() { _isLoading = true; _loadingMessage = "Checking cache..."; });
     String? cachedText = await _checkCache();
@@ -226,13 +274,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
   }
 
-  // --- PLAYBACK CONTROLS ---
   Future<void> _playCurrentPage() async {
-    // 1. Setup Engine
+    setState(() => _isPlaying = true);
     await _flutterTts.setSpeechRate(_speechRate);
     await _flutterTts.setPitch(_pitch);
     
-    // 2. Calculate Offset
     String textToSpeak = _currentPageContent;
     if (_currentWordStart > 0 && _currentWordStart < _currentPageContent.length) {
       textToSpeak = _currentPageContent.substring(_currentWordStart);
@@ -241,18 +287,46 @@ class _ReaderScreenState extends State<ReaderScreen> {
       _currentSpeechOffset = 0;
     }
     
-    // 3. Update UI & Notification
-    setState(() => _isPlaying = true);
-    _audioHandler?.setPlaybackState(isPlaying: true);
-    
-    // 4. Speak
     await _flutterTts.speak(textToSpeak);
+    _audioHandler?.setPlaybackState(isPlaying: true);
   }
 
   Future<void> _pausePlayback() async {
     await _flutterTts.stop();
     setState(() => _isPlaying = false);
     _audioHandler?.setPlaybackState(isPlaying: false);
+  }
+
+  // --- SKIP CONTROLS ---
+  void _skipForward() {
+    int newPos = _currentWordStart + 150; // Skip approx 20-30 words
+    if (newPos >= _currentPageContent.length) newPos = _currentPageContent.length - 1;
+    _playFromIndex(newPos);
+  }
+
+  void _skipBackward() {
+    int newPos = _currentWordStart - 150;
+    if (newPos < 0) newPos = 0;
+    _playFromIndex(newPos);
+  }
+
+  void _playFromIndex(int index) async {
+    setState(() {
+      _currentWordStart = index;
+      _currentSpeechOffset = index; 
+      _isPlaying = true;
+    });
+    
+    await _flutterTts.stop(); 
+
+    await _flutterTts.setSpeechRate(_speechRate);
+    await _flutterTts.setPitch(_pitch);
+    _audioHandler?.setPlaybackState(isPlaying: true);
+
+    if (index < _currentPageContent.length) {
+      String textToSpeak = _currentPageContent.substring(index);
+      await _flutterTts.speak(textToSpeak);
+    }
   }
 
   Future<void> _togglePlay() async {
@@ -263,7 +337,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
   }
 
-  // ... (Extraction, Cache, Voice Init Logic same as previous) ...
+  // ... (Other helpers: extract, cache, setVoice, changeLanguage, saveAudio) ...
   Future<void> _extractTextAndCache() async {
     try {
       File file = File(widget.filePath);
@@ -276,6 +350,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       } else if (ext.endsWith('.txt')) {
         rawText = await file.readAsString();
       } else if (ext.endsWith('.docx')) {
+        setState(() { _loadingMessage = "Reading Word Document..."; });
         final bytes = await file.readAsBytes();
         rawText = docxToText(bytes); 
       } else if (ext.endsWith('.jpg') || ext.endsWith('.png') || ext.endsWith('.jpeg')) {
@@ -318,25 +393,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
     } catch (e) { print("Save cache error: $e"); }
   }
 
-  Future<void> _initVoices() async {
-    await Future.delayed(const Duration(milliseconds: 500));
-    try {
-      final voices = await _flutterTts.getVoices;
-      if (voices == null) return;
-      List<Map<String, String>> cleanVoices = [];
-      for (var voice in voices) {
-        Map<Object?, Object?> rawMap = voice as Map<Object?, Object?>;
-        if (rawMap.containsKey("name") && rawMap.containsKey("locale")) {
-          cleanVoices.add({
-            "name": rawMap["name"].toString(),
-            "locale": rawMap["locale"].toString(),
-          });
-        }
-      }
-      if (mounted) setState(() { _voices = cleanVoices; });
-    } catch (e) { print("Error: $e"); }
-  }
-
   Future<void> _setVoice(Map<String, String> voice) async {
     try {
       await _flutterTts.stop();
@@ -354,11 +410,32 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   Future<void> _saveToAudioFile() async {
-    // Implementation same as previous (omitted for brevity, logic persists)
-    // Can be re-added if needed, but focus here is on Audio Controls
+    if (_fullOriginalText.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Wait for file to load first.")));
+      return;
+    }
+    setState(() { _isLoading = true; _loadingMessage = "Creating Audio File..."; });
+    try {
+      String fileName = widget.fileName.replaceAll(RegExp(r'[^\w\s]+'), ''); 
+      if (fileName.length > 20) fileName = fileName.substring(0, 20);
+      Directory? dir;
+      if (Platform.isAndroid) {
+        dir = Directory('/storage/emulated/0/Download');
+      } else {
+        dir = await getApplicationDocumentsDirectory();
+      }
+      if (!await dir.exists()) dir = await getExternalStorageDirectory();
+      String filePath = "${dir!.path}/AUDIRE_$fileName.wav";
+      String textToSave = _currentPageContent; 
+      await _flutterTts.synthesizeToFile(textToSave, "AUDIRE_$fileName.wav");
+      setState(() { _isLoading = false; });
+      showDialog(context: context, builder: (ctx) => AlertDialog(title: const Text("Audio Saved!"), content: Text("File saved as AUDIRE_$fileName.wav\n\nCheck your Music or Internal Storage."), actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("OK"))]));
+    } catch (e) {
+      setState(() { _isLoading = false; });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error saving audio: $e")));
+    }
   }
 
-  // --- UI BUILDERS ---
   void _showVoicePicker() {
     showModalBottomSheet(context: context, builder: (ctx) {
         return Container(
@@ -368,13 +445,12 @@ class _ReaderScreenState extends State<ReaderScreen> {
               const Text("Select Voice", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
               Expanded(child: ListView.builder(itemCount: _voices.length, itemBuilder: (c, i) {
                 var voice = _voices[i];
-                // FIX: Use Pretty Name
-                String displayName = _formatVoiceName(voice["name"]!, voice["locale"]!);
+                var displayInfo = _getVoiceDisplayInfo(voice["name"]!, voice["locale"]!);
                 bool isSelected = _currentVoice == voice;
                 return ListTile(
-                  leading: const Icon(Icons.record_voice_over, color: Colors.grey),
-                  title: Text(displayName),
-                  subtitle: Text(voice["locale"]!), 
+                  leading: Icon(displayInfo['icon'], color: Colors.grey),
+                  title: Text(displayInfo['title']),
+                  subtitle: Text(displayInfo['subtitle']), 
                   trailing: isSelected ? const Icon(Icons.check_circle, color: Colors.deepPurple) : null,
                   onTap: () { _setVoice(voice); Navigator.pop(ctx); }
                 );
@@ -396,39 +472,46 @@ class _ReaderScreenState extends State<ReaderScreen> {
               const Text("Audio Settings", style: TextStyle(fontWeight: FontWeight.bold)),
               const SizedBox(height: 20),
               Text("Speed: ${_speechRate.toStringAsFixed(1)}x"),
-              Slider(value: _speechRate, min: 0.1, max: 2.0, 
-                onChangeEnd: (v) {
-                  // FIX: Restart audio instantly when slider released
-                  if (_isPlaying) { 
-                    _pausePlayback(); 
-                    Future.delayed(const Duration(milliseconds: 200), _playCurrentPage);
-                  }
-                },
-                onChanged: (v) {
-                  setState(() => _speechRate = v);
-                  setModalState((){});
-                  // Don't call _flutterTts.setSpeechRate here, do it on play
-                }
-              ),
+              Slider(value: _speechRate, min: 0.1, max: 2.0, onChangeEnd: (v) { if (_isPlaying) { _pausePlayback(); Future.delayed(const Duration(milliseconds: 200), _playCurrentPage); } }, onChanged: (v) { setState(() => _speechRate = v); setModalState((){}); }),
               Text("Pitch: ${_pitch.toStringAsFixed(1)}"),
-              Slider(value: _pitch, min: 0.5, max: 2.0, 
-                onChangeEnd: (v) {
-                  // FIX: Restart audio instantly when slider released
-                  if (_isPlaying) { 
-                    _pausePlayback(); 
-                    Future.delayed(const Duration(milliseconds: 200), _playCurrentPage);
-                  }
-                },
-                onChanged: (v) {
-                  setState(() => _pitch = v);
-                  setModalState((){});
-                }
-              ),
+              Slider(value: _pitch, min: 0.5, max: 2.0, onChangeEnd: (v) { if (_isPlaying) { _pausePlayback(); Future.delayed(const Duration(milliseconds: 200), _playCurrentPage); } }, onChanged: (v) { setState(() => _pitch = v); setModalState((){}); }),
             ],
           ),
         );
       });
     });
+  }
+
+  void _showPageJumper() {
+    TextEditingController pageController = TextEditingController();
+    showDialog(context: context, builder: (ctx) => AlertDialog(title: const Text("Jump to Page"), content: TextField(controller: pageController, keyboardType: TextInputType.number, decoration: const InputDecoration(hintText: "Enter page number")), actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancel")), ElevatedButton(onPressed: () { int? page = int.tryParse(pageController.text); if (page != null && page > 0 && page <= _pages.length) { Navigator.pop(ctx); _changePage(page - 1); } }, child: const Text("Go"))]));
+  }
+
+  void _handleWordTap(String word, int startIndex) {
+    if (_isPlaying) _pausePlayback();
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) {
+        return Container(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(word, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.deepPurple)),
+              const SizedBox(height: 20),
+              ListTile(leading: const Icon(Icons.play_circle_fill), title: const Text("Read from here"), onTap: () { Navigator.pop(ctx); _playFromIndex(startIndex); }),
+              ListTile(leading: const Icon(Icons.menu_book), title: const Text("Look up definition"), onTap: () { Navigator.pop(ctx); _showDefinition(word); }),
+            ],
+          ),
+        );
+      }
+    );
+  }
+
+  void _showDefinition(String word) async {
+    String cleanWord = word.replaceAll(RegExp(r'[^\w\s]'), '');
+    String? def = await DictionaryService.getDefinition(cleanWord);
+    showDialog(context: context, builder: (ctx) => AlertDialog(title: Text(cleanWord), content: Text(def ?? "Definition not found."), actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Close"))]));
   }
 
   @override
@@ -437,11 +520,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
       appBar: AppBar(
         title: Text(widget.fileName, style: const TextStyle(fontSize: 14)),
         actions: [
+          IconButton(icon: const Icon(Icons.save_alt), onPressed: _saveToAudioFile),
           IconButton(icon: const Icon(Icons.record_voice_over), onPressed: _showVoicePicker),
           PopupMenuButton<String>(
             icon: const Icon(Icons.translate),
             onSelected: _changeLanguage,
             itemBuilder: (context) => [
+              const PopupMenuDivider(height: 20),
               const PopupMenuItem(value: 'en', child: Text('English')),
               const PopupMenuItem(value: 'bem', child: Text('Bemba')),
               const PopupMenuItem(value: 'nya', child: Text('Nyanja')),
@@ -457,13 +542,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
           Expanded(
             child: _isLoading 
               ? Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [const CircularProgressIndicator(), const SizedBox(height: 20), Text(_loadingMessage, textAlign: TextAlign.center)]))
-              : Padding(
-                  padding: const EdgeInsets.all(16.0), 
-                  child: SingleChildScrollView(
-                    controller: _scrollController,
-                    child: _buildHighlightedText(), 
-                  ),
-                ),
+              : Padding(padding: const EdgeInsets.all(16.0), child: SingleChildScrollView(controller: _scrollController, child: _buildInteractiveText())),
           ),
           if (!_isLoading && _pages.isNotEmpty)
             Container(
@@ -472,7 +551,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   IconButton(icon: const Icon(Icons.arrow_back_ios), onPressed: _currentPageIndex > 0 ? () => _changePage(_currentPageIndex - 1) : null),
-                  Text("Page ${_currentPageIndex + 1} of ${_pages.length}"),
+                  InkWell(onTap: _showPageJumper, child: Padding(padding: const EdgeInsets.all(8.0), child: Text("Page ${_currentPageIndex + 1} of ${_pages.length}", style: const TextStyle(fontWeight: FontWeight.bold, decoration: TextDecoration.underline)))),
                   IconButton(icon: const Icon(Icons.arrow_forward_ios), onPressed: _currentPageIndex < _pages.length - 1 ? () => _changePage(_currentPageIndex + 1) : null),
                 ],
               ),
@@ -481,32 +560,55 @@ class _ReaderScreenState extends State<ReaderScreen> {
       ),
       floatingActionButton: _isLoading 
           ? null 
-          : FloatingActionButton.extended(
-              onPressed: _togglePlay,
-              icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow),
-              label: Text(_isPlaying ? "Pause" : "Play"),
+          : Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                FloatingActionButton.small(
+                  heroTag: "rewind",
+                  onPressed: _skipBackward,
+                  child: const Icon(Icons.replay_10),
+                ),
+                const SizedBox(width: 16),
+                FloatingActionButton.extended(
+                  heroTag: "play",
+                  onPressed: _togglePlay,
+                  icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow),
+                  label: Text(_isPlaying ? "Pause" : "Play"),
+                ),
+                const SizedBox(width: 16),
+                FloatingActionButton.small(
+                  heroTag: "forward",
+                  onPressed: _skipForward,
+                  child: const Icon(Icons.forward_10),
+                ),
+              ],
             ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
     );
   }
 
-  Widget _buildHighlightedText() {
+  Widget _buildInteractiveText() {
     if (_currentPageContent.isEmpty) return const Text("No text.");
-    int start = _currentWordStart;
-    int end = _currentWordEnd;
-    if (start < 0) start = 0;
-    if (end > _currentPageContent.length) end = _currentPageContent.length;
-    if (start > end) start = end;
-
-    return RichText(
-      textAlign: TextAlign.justify,
-      text: TextSpan(
-        style: TextStyle(fontSize: 18, height: 1.6, color: Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black87),
-        children: [
-          TextSpan(text: _currentPageContent.substring(0, start)),
-          TextSpan(text: _currentPageContent.substring(start, end), style: const TextStyle(backgroundColor: Colors.yellow, color: Colors.black, fontWeight: FontWeight.bold)),
-          TextSpan(text: _currentPageContent.substring(end)),
-        ],
-      ),
-    );
+    List<TextSpan> spans = [];
+    int currentIndex = 0;
+    List<String> rawWords = _currentPageContent.split(' ');
+    for (String word in rawWords) {
+      final int wordStart = currentIndex;
+      final int wordEnd = currentIndex + word.length;
+      bool isHighlighted = _currentWordStart >= wordStart && _currentWordStart < wordEnd;
+      spans.add(TextSpan(
+        text: "$word ", 
+        style: TextStyle(
+          fontSize: 18, 
+          height: 1.6, 
+          color: Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black87,
+          backgroundColor: isHighlighted ? Colors.yellow : null,
+          fontWeight: isHighlighted ? FontWeight.bold : FontWeight.normal
+        ),
+        recognizer: TapGestureRecognizer()..onTap = () => _handleWordTap(word.trim(), wordStart),
+      ));
+      currentIndex += word.length + 1; 
+    }
+    return RichText(textAlign: TextAlign.justify, text: TextSpan(children: spans));
   }
 }
