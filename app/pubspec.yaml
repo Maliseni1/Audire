@@ -19,7 +19,6 @@ dependencies:
   flutter_tts: ^4.0.2
 
   # 2. File & Permission Handling
-  # UPDATED: Enforce newer version to fix 'Registrar' error
   file_picker: ^8.3.0 
   permission_handler: ^11.3.0
   path_provider: ^2.1.2
@@ -29,7 +28,6 @@ dependencies:
   docx_to_text: ^1.0.1
   
   # ML Kit (OCR & Translation)
-  # UPDATED: Enforce versions that work together
   google_mlkit_text_recognition: ^0.14.0
   google_mlkit_translation: ^0.12.0
 
@@ -42,7 +40,6 @@ dependencies:
 
   # 6. Update Checker
   http: ^1.2.0
-  # UPDATED: Bumped version to resolve 'web' dependency conflict with audio_service
   package_info_plus: ^8.0.0
   url_launcher: ^6.2.5
 
@@ -62,7 +59,8 @@ flutter_launcher_icons:
 flutter:
   uses-material-design: true
 
+  # Asset Registration (FIXED)
   assets:
     - assets/icon.png
-    - assets/dictionary.json
-    - assets/phrasebook.json.gz
+    - assets/phrasebook.json       # <--- FIXED: This is a normal JSON file
+    - assets/dictionary.json.gz    # <--- FIXED: This is the compressed GZIP file
