@@ -65,4 +65,4 @@ flutter:
   assets:
     - assets/icon.png
     - assets/dictionary.json
-    - assets/phrasebook.json
+    - assets/phrasebook.json.gz
