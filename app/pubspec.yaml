@@ -2,7 +2,6 @@ name: app
 description: "A new Flutter project."
 publish_to: 'none' 
 
-# UPDATED: Version 2.0.0
 version: 2.0.0+1
 
 environment:
@@ -15,37 +14,34 @@ dependencies:
   cupertino_icons: ^1.0.8
 
   # --- AUDIRE Core Dependencies ---
-
-  # 1. Text to Speech
   flutter_tts: ^4.0.2
-
-  # 2. File & Permission Handling
+  
+  # Permission & Files
   file_picker: ^8.3.0 
   permission_handler: ^11.3.0
   path_provider: ^2.1.2
 
-  # 3. Text Extraction
+  # Reading Engines
   read_pdf_text: ^0.3.1
   docx_to_text: ^1.0.1
   
   # ML Kit (OCR & Translation)
   google_mlkit_text_recognition: ^0.14.0
   google_mlkit_translation: ^0.12.0
+  image_picker: ^1.0.7 
 
-  # 4. State Management & Storage
+  # State & Audio
   shared_preferences: ^2.2.2
-  
-  # 5. Audio & Background Playback
   audio_session: ^0.1.21
   audio_service: ^0.18.18 
 
-  # 6. Update Checker
+  # Update Checker & Web
   http: ^1.2.0
   package_info_plus: ^8.0.0
   url_launcher: ^6.2.5
-
-  # NEW: For taking pictures inside the app
-  image_picker: ^1.0.7
+  
+  # Free Translation Logic
+  translator: ^1.0.0
 
 dev_dependencies:
   flutter_test:
@@ -53,18 +49,33 @@ dev_dependencies:
 
   flutter_lints: ^5.0.0
   flutter_launcher_icons: ^0.13.1
+  
+  # NEW: Generates the Splash Screen
+  flutter_native_splash: ^2.4.0
 
+# 1. Icon Configuration
 flutter_launcher_icons:
   android: "launcher_icon"
   ios: true
   image_path: "assets/icon.png"
   min_sdk_android: 21 
 
+# 2. Splash Screen Configuration (NEW)
+flutter_native_splash:
+  color: "#673AB7" # Deep Purple (Matches your app theme)
+  image: assets/icon.png
+  branding: assets/icon.png
+  color_dark: "#121212" # Dark mode background color
+  android_12:
+    image: assets/icon.png
+    color: "#673AB7"
+  android: true
+  ios: true
+
 flutter:
   uses-material-design: true
 
-  # Asset Registration (FIXED)
   assets:
     - assets/icon.png
-    - assets/phrasebook.json       # <--- FIXED: This is a normal JSON file
-    - assets/dictionary.json.gz    # <--- FIXED: This is the compressed GZIP file
+    - assets/dictionary.json.gz
+    - assets/phrasebook.json
