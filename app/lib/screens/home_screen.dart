@@ -4,8 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart'; 
 import 'package:permission_handler/permission_handler.dart';
-import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart'; // NEW: OCR
-import 'package:path_provider/path_provider.dart'; // NEW: Save File
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:path_provider/path_provider.dart';
 import '../services/file_scanner.dart'; 
 import '../services/audio_manager.dart';
 import 'reader_screen.dart';
@@ -96,7 +96,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // --- MULTI-PAGE SCANNING LOGIC ---
   Future<void> _scanDocument() async {
-    // 1. Check Permissions
     var status = await Permission.camera.status;
     if (!status.isGranted) status = await Permission.camera.request();
 
@@ -105,7 +104,6 @@ class _HomeScreenState extends State<HomeScreen> {
        return;
     }
 
-    // 2. Start Scanning Loop
     List<String> scannedPages = [];
     bool scanning = true;
     int pageCount = 0;
@@ -114,15 +112,14 @@ class _HomeScreenState extends State<HomeScreen> {
       try {
         final XFile? photo = await _picker.pickImage(
           source: ImageSource.camera,
-          imageQuality: 85, // Optimize size
+          imageQuality: 85, 
         );
 
         if (photo == null) {
-          scanning = false; // User cancelled camera
+          scanning = false; 
           break;
         }
 
-        // 3. Process Image (OCR) immediately
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text("Processing Page ${pageCount + 1}..."))
@@ -142,7 +139,6 @@ class _HomeScreenState extends State<HomeScreen> {
           if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("No text detected on this page.")));
         }
 
-        // 4. Ask to Continue
         if (mounted) {
           bool? addMore = await showDialog<bool>(
             context: context,
@@ -152,11 +148,11 @@ class _HomeScreenState extends State<HomeScreen> {
               content: const Text("Would you like to scan another page?"),
               actions: [
                 TextButton(
-                  onPressed: () => Navigator.pop(ctx, false), // Finish
+                  onPressed: () => Navigator.pop(ctx, false), 
                   child: const Text("Finish & Read", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
                 ),
                 ElevatedButton.icon(
-                  onPressed: () => Navigator.pop(ctx, true), // Add More
+                  onPressed: () => Navigator.pop(ctx, true), 
                   icon: const Icon(Icons.add_a_photo),
                   label: const Text("Add Page"),
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple, foregroundColor: Colors.white),
@@ -175,7 +171,6 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    // 5. Compile and Save
     if (scannedPages.isNotEmpty) {
       await _saveAndOpenScannedDoc(scannedPages);
     }
@@ -183,7 +178,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _saveAndOpenScannedDoc(List<String> pages) async {
     try {
-      // Create a single text block with page separators
       StringBuffer buffer = StringBuffer();
       for (int i = 0; i < pages.length; i++) {
         buffer.writeln("--- Page ${i + 1} ---");
@@ -191,18 +185,14 @@ class _HomeScreenState extends State<HomeScreen> {
         buffer.writeln("\n");
       }
 
-      // Save to Documents directory
       final directory = await getApplicationDocumentsDirectory();
-      // Create unique filename based on timestamp
       String fileName = "Scanned_Doc_${DateTime.now().millisecondsSinceEpoch}.txt";
       File file = File('${directory.path}/$fileName');
       
       await file.writeAsString(buffer.toString());
 
-      // Refresh library to show new file
       _scanFiles();
 
-      // Open it
       if (mounted) {
         _openReader(file.path, "Scanned Document (${pages.length} Pages)");
       }
@@ -234,7 +224,6 @@ class _HomeScreenState extends State<HomeScreen> {
     ).then((_) {});
   }
 
-  // --- SLEEP TIMER DIALOG ---
   void _showSleepTimerDialog() {
     showModalBottomSheet(
       context: context,
@@ -290,13 +279,50 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  // --- UPDATED ABOUT DIALOG FOR v2.0.0 ---
   void _showAboutDialog() {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text("AUDIRE"),
-        content: const Text("Version 2.0.0\nBuilt by Chiza Labs.\n\nThe Ultimate Offline Audio Reader."),
-        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Close"))],
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.audio_file, color: Colors.deepPurple, size: 30),
+            SizedBox(width: 10),
+            Text("AUDIRE", style: TextStyle(fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: const SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text("Version 2.0.0", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              SizedBox(height: 5),
+              Text("The Ultimate Offline Audio Reader."),
+              SizedBox(height: 15),
+              Text("What's New in v2.0:", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.deepPurple)),
+              SizedBox(height: 5),
+              Text("• Camera Scanning (OCR)"),
+              Text("• Interactive Bookmarking"),
+              Text("• Smart Sleep Timer"),
+              Text("• Offline Translation"),
+              Text("• Background Audio Player"),
+              SizedBox(height: 20),
+              Divider(),
+              SizedBox(height: 10),
+              Text("Developed by", style: TextStyle(fontSize: 12, color: Colors.grey)),
+              Text("Chiza Labs", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              Text("© 2025 All Rights Reserved", style: TextStyle(fontSize: 12, color: Colors.grey)),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("Close", style: TextStyle(color: Colors.deepPurple)),
+          ),
+        ],
       ),
     );
   }
