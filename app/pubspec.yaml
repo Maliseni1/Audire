@@ -60,14 +60,16 @@ flutter_launcher_icons:
   image_path: "assets/icon.png"
   min_sdk_android: 21 
 
-# 2. Splash Screen Configuration (NEW)
+# 2. Splash Screen Configuration (UPDATED)
 flutter_native_splash:
-  color: "#673AB7" # Deep Purple (Matches your app theme)
+  color: "#673AB7" 
   image: assets/icon.png
-  branding: assets/icon.png
-  color_dark: "#121212" # Dark mode background color
+  # This puts the "From Chiza Labs" image at the bottom
+  branding: assets/branding.png 
+  color_dark: "#121212" 
   android_12:
     image: assets/icon.png
+    branding: assets/branding.png
     color: "#673AB7"
   android: true
   ios: true
@@ -77,5 +79,6 @@ flutter:
 
   assets:
     - assets/icon.png
+    - assets/branding.png # <--- Register the new image
     - assets/dictionary.json.gz
     - assets/phrasebook.json

@@ -8,6 +8,7 @@ import 'reader_screen.dart';
 import 'dictionary_screen.dart'; 
 import 'settings_screen.dart'; 
 import 'history_screen.dart'; 
+import 'bookmarks_screen.dart'; // NEW IMPORT
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -271,7 +272,7 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(height: 10),
             TextField(
               controller: _searchController,
-              onChanged: (val) => _applyFilters(), // Update filters on search
+              onChanged: (val) => _applyFilters(), 
               decoration: InputDecoration(
                 hintText: 'Search your library...',
                 prefixIcon: const Icon(Icons.search),
@@ -383,6 +384,21 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
           ),
+          ListTile(leading: const Icon(Icons.library_books), title: const Text('My Library'), onTap: () => Navigator.pop(context)),
+          ListTile(leading: const Icon(Icons.history), title: const Text('History'), onTap: () { Navigator.pop(context); Navigator.push(context, MaterialPageRoute(builder: (context) => const HistoryScreen())); }),
+          
+          // NEW BOOKMARKS TILE
+          ListTile(
+            leading: const Icon(Icons.bookmarks), 
+            title: const Text('Bookmarks'), 
+            onTap: () { 
+              Navigator.pop(context); 
+              Navigator.push(context, MaterialPageRoute(builder: (context) => const BookmarksScreen())); 
+            }
+          ),
+
+          ListTile(leading: const Icon(Icons.menu_book), title: const Text('Offline Dictionary'), onTap: () { Navigator.pop(context); Navigator.push(context, MaterialPageRoute(builder: (context) => const DictionaryScreen())); }),
+          const Divider(),
           ListTile(
             leading: const Icon(Icons.settings), 
             title: const Text('Settings'), 
@@ -391,12 +407,11 @@ class _HomeScreenState extends State<HomeScreen> {
               Navigator.push(context, MaterialPageRoute(builder: (context) => const SettingsScreen())); 
             }
           ),
-          // --- CONNECTED ABOUT DIALOG ---
           ListTile(
             leading: const Icon(Icons.info_outline), 
             title: const Text('About'), 
             onTap: () { 
-              Navigator.pop(context); // Close drawer first
+              Navigator.pop(context); 
               _showAboutDialog(); 
             }
           ),
