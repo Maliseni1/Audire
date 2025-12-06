@@ -2,7 +2,8 @@ name: app
 description: "A new Flutter project."
 publish_to: 'none' 
 
-version: 1.0.0+1
+# UPDATED: Version 2.0.0
+version: 2.0.0+1
 
 environment:
   sdk: ^3.9.2
@@ -42,6 +43,9 @@ dependencies:
   http: ^1.2.0
   package_info_plus: ^8.0.0
   url_launcher: ^6.2.5
+
+  # NEW: For taking pictures inside the app
+  image_picker: ^1.0.7
 
 dev_dependencies:
   flutter_test:

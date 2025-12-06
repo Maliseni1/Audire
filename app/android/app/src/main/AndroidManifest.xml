@@ -10,6 +10,9 @@
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <!-- CRITICAL: Allows the notification bar controls to persist -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+
+    <!-- Permission for Camera -->
+    <uses-permission android:name="android.permission.CAMERA"/>
     
     <application
         android:label="AUDIRE"
