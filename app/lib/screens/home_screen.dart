@@ -24,6 +24,9 @@ class _HomeScreenState extends State<HomeScreen> {
   
   final ImagePicker _picker = ImagePicker();
 
+  // Category State
+  String _selectedCategory = 'All'; // Options: All, Documents, Photos
+
   @override
   void initState() {
     super.initState();
@@ -36,23 +39,41 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) {
       setState(() {
         _allFiles = files;
-        _filteredFiles = files;
+        _applyFilters(); // Apply filters immediately after scanning
         _isLoading = false;
       });
     }
   }
 
-  void _runFilter(String enteredKeyword) {
-    List<FileSystemEntity> results = [];
-    if (enteredKeyword.isEmpty) {
-      results = _allFiles;
-    } else {
-      results = _allFiles
-          .where((file) => file.path.split('/').last.toLowerCase().contains(enteredKeyword.toLowerCase()))
-          .toList();
+  // --- FILTER LOGIC ---
+  void _applyFilters() {
+    String keyword = _searchController.text.toLowerCase();
+    
+    // Start with all files
+    List<FileSystemEntity> temp = _allFiles;
+
+    // 1. Filter by Category
+    if (_selectedCategory == 'Documents') {
+      temp = temp.where((f) {
+        String path = f.path.toLowerCase();
+        return path.endsWith('.pdf') || path.endsWith('.docx') || path.endsWith('.txt');
+      }).toList();
+    } else if (_selectedCategory == 'Photos') {
+      temp = temp.where((f) {
+        String path = f.path.toLowerCase();
+        return path.endsWith('.jpg') || path.endsWith('.png') || path.endsWith('.jpeg');
+      }).toList();
     }
+
+    // 2. Filter by Search Keyword
+    if (keyword.isNotEmpty) {
+      temp = temp.where((file) => 
+        file.path.split('/').last.toLowerCase().contains(keyword)
+      ).toList();
+    }
+
     setState(() {
-      _filteredFiles = results;
+      _filteredFiles = temp;
     });
   }
 
@@ -196,6 +217,36 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // Helper for Category Chips
+  Widget _buildCategoryChip(String label) {
+    bool isSelected = _selectedCategory == label;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8.0),
+      child: ChoiceChip(
+        label: Text(label),
+        selected: isSelected,
+        onSelected: (bool selected) {
+          if (selected) {
+            setState(() {
+              _selectedCategory = label;
+              _applyFilters();
+            });
+          }
+        },
+        selectedColor: Colors.deepPurple,
+        labelStyle: TextStyle(
+          color: isSelected ? Colors.white : Colors.deepPurple,
+          fontWeight: FontWeight.bold
+        ),
+        backgroundColor: Colors.deepPurple.shade50,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+          side: BorderSide(color: isSelected ? Colors.deepPurple : Colors.deepPurple.shade100),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     bool isDark = Theme.of(context).brightness == Brightness.dark;
@@ -220,7 +271,7 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(height: 10),
             TextField(
               controller: _searchController,
-              onChanged: _runFilter,
+              onChanged: (val) => _applyFilters(), // Update filters on search
               decoration: InputDecoration(
                 hintText: 'Search your library...',
                 prefixIcon: const Icon(Icons.search),
@@ -257,6 +308,19 @@ class _HomeScreenState extends State<HomeScreen> {
                 const Text("Your Library", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                 IconButton(icon: const Icon(Icons.refresh, size: 20), onPressed: _scanFiles),
               ],
+            ),
+
+            // --- CATEGORY CHIPS ---
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              child: Row(
+                children: [
+                  _buildCategoryChip('All'),
+                  _buildCategoryChip('Documents'),
+                  _buildCategoryChip('Photos'),
+                ],
+              ),
             ),
             
             Expanded(
