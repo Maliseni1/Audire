@@ -1,11 +1,13 @@
 import 'dart:io';
-import 'dart:async'; // Required for Timer
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart'; 
-import 'package:permission_handler/permission_handler.dart'; 
+import 'package:permission_handler/permission_handler.dart';
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart'; // NEW: OCR
+import 'package:path_provider/path_provider.dart'; // NEW: Save File
 import '../services/file_scanner.dart'; 
-import '../services/audio_manager.dart'; // Import for globalAudioHandler
+import '../services/audio_manager.dart';
 import 'reader_screen.dart';
 import 'dictionary_screen.dart'; 
 import 'settings_screen.dart'; 
@@ -27,7 +29,6 @@ class _HomeScreenState extends State<HomeScreen> {
   final ImagePicker _picker = ImagePicker();
   String _selectedCategory = 'All'; 
   
-  // Sleep Timer State
   Timer? _sleepTimer;
 
   @override
@@ -38,7 +39,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
-    _sleepTimer?.cancel(); // Clean up timer on close
+    _sleepTimer?.cancel();
     super.dispose();
   }
 
@@ -93,40 +94,135 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  // --- MULTI-PAGE SCANNING LOGIC ---
   Future<void> _scanDocument() async {
+    // 1. Check Permissions
     var status = await Permission.camera.status;
     if (!status.isGranted) status = await Permission.camera.request();
 
-    if (status.isDenied) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Camera permission is required.")));
-      return;
-    }
-    
-    if (status.isPermanentlyDenied) {
-      if (mounted) {
-        showDialog(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            title: const Text("Permission Required"),
-            content: const Text("Camera access is permanently denied. Please enable it in Settings."),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancel")),
-              ElevatedButton(onPressed: () { Navigator.pop(ctx); openAppSettings(); }, child: const Text("Settings")),
-            ],
-          )
-        );
-      }
-      return;
+    if (status.isDenied || status.isPermanentlyDenied) {
+       _showPermissionDialog();
+       return;
     }
 
+    // 2. Start Scanning Loop
+    List<String> scannedPages = [];
+    bool scanning = true;
+    int pageCount = 0;
+
+    while (scanning) {
+      try {
+        final XFile? photo = await _picker.pickImage(
+          source: ImageSource.camera,
+          imageQuality: 85, // Optimize size
+        );
+
+        if (photo == null) {
+          scanning = false; // User cancelled camera
+          break;
+        }
+
+        // 3. Process Image (OCR) immediately
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("Processing Page ${pageCount + 1}..."))
+          );
+        }
+
+        final inputImage = InputImage.fromFilePath(photo.path);
+        final textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
+        final RecognizedText recognizedText = await textRecognizer.processImage(inputImage);
+        await textRecognizer.close();
+
+        String pageText = recognizedText.text.trim();
+        if (pageText.isNotEmpty) {
+          scannedPages.add(pageText);
+          pageCount++;
+        } else {
+          if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("No text detected on this page.")));
+        }
+
+        // 4. Ask to Continue
+        if (mounted) {
+          bool? addMore = await showDialog<bool>(
+            context: context,
+            barrierDismissible: false,
+            builder: (ctx) => AlertDialog(
+              title: Text("Page $pageCount Scanned"),
+              content: const Text("Would you like to scan another page?"),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false), // Finish
+                  child: const Text("Finish & Read", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
+                ),
+                ElevatedButton.icon(
+                  onPressed: () => Navigator.pop(ctx, true), // Add More
+                  icon: const Icon(Icons.add_a_photo),
+                  label: const Text("Add Page"),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple, foregroundColor: Colors.white),
+                ),
+              ],
+            ),
+          );
+
+          if (addMore != true) {
+            scanning = false;
+          }
+        }
+      } catch (e) {
+        scanning = false;
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Scan Error: $e")));
+      }
+    }
+
+    // 5. Compile and Save
+    if (scannedPages.isNotEmpty) {
+      await _saveAndOpenScannedDoc(scannedPages);
+    }
+  }
+
+  Future<void> _saveAndOpenScannedDoc(List<String> pages) async {
     try {
-      final XFile? photo = await _picker.pickImage(source: ImageSource.camera);
-      if (photo != null) {
-        _openReader(photo.path, "Scanned Document");
+      // Create a single text block with page separators
+      StringBuffer buffer = StringBuffer();
+      for (int i = 0; i < pages.length; i++) {
+        buffer.writeln("--- Page ${i + 1} ---");
+        buffer.writeln(pages[i]);
+        buffer.writeln("\n");
+      }
+
+      // Save to Documents directory
+      final directory = await getApplicationDocumentsDirectory();
+      // Create unique filename based on timestamp
+      String fileName = "Scanned_Doc_${DateTime.now().millisecondsSinceEpoch}.txt";
+      File file = File('${directory.path}/$fileName');
+      
+      await file.writeAsString(buffer.toString());
+
+      // Refresh library to show new file
+      _scanFiles();
+
+      // Open it
+      if (mounted) {
+        _openReader(file.path, "Scanned Document (${pages.length} Pages)");
       }
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e")));
+      print("Error saving scanned doc: $e");
     }
+  }
+
+  void _showPermissionDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Permission Required"),
+        content: const Text("Camera access is needed to scan documents. Please enable it in Settings."),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancel")),
+          ElevatedButton(onPressed: () { Navigator.pop(ctx); openAppSettings(); }, child: const Text("Settings")),
+        ],
+      )
+    );
   }
 
   void _openReader(String path, String name) {
@@ -153,7 +249,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   const Text("Set Sleep Timer", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.deepPurple)),
-                  // Show cancel button if timer is active
                   if (_sleepTimer != null && _sleepTimer!.isActive)
                     TextButton(
                       onPressed: () {
@@ -179,13 +274,12 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _setTimer(int minutes, BuildContext ctx) {
-    _sleepTimer?.cancel(); // Cancel existing
+    _sleepTimer?.cancel(); 
     Navigator.pop(ctx);
     
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Audio will stop in $minutes minutes")));
     
     _sleepTimer = Timer(Duration(minutes: minutes), () {
-      // Stop Audio Globally using the handler we exposed
       if (globalAudioHandler != null) {
         globalAudioHandler!.pause();
         globalAudioHandler!.stop();
@@ -409,7 +503,6 @@ class _HomeScreenState extends State<HomeScreen> {
           
           const Divider(),
           
-          // --- NEW: SLEEP TIMER IN DRAWER ---
           ListTile(
             leading: const Icon(Icons.timer), 
             title: const Text('Sleep Timer'), 
