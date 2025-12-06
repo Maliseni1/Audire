@@ -1,14 +1,16 @@
 import 'dart:io';
+import 'dart:async'; // Required for Timer
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart'; 
 import 'package:permission_handler/permission_handler.dart'; 
 import '../services/file_scanner.dart'; 
+import '../services/audio_manager.dart'; // Import for globalAudioHandler
 import 'reader_screen.dart';
 import 'dictionary_screen.dart'; 
 import 'settings_screen.dart'; 
 import 'history_screen.dart'; 
-import 'bookmarks_screen.dart'; // NEW IMPORT
+import 'bookmarks_screen.dart'; 
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -22,16 +24,22 @@ class _HomeScreenState extends State<HomeScreen> {
   List<FileSystemEntity> _filteredFiles = [];
   bool _isLoading = true;
   final TextEditingController _searchController = TextEditingController();
-  
   final ImagePicker _picker = ImagePicker();
-
-  // Category State
-  String _selectedCategory = 'All'; // Options: All, Documents, Photos
+  String _selectedCategory = 'All'; 
+  
+  // Sleep Timer State
+  Timer? _sleepTimer;
 
   @override
   void initState() {
     super.initState();
     _scanFiles();
+  }
+
+  @override
+  void dispose() {
+    _sleepTimer?.cancel(); // Clean up timer on close
+    super.dispose();
   }
 
   Future<void> _scanFiles() async {
@@ -40,20 +48,16 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) {
       setState(() {
         _allFiles = files;
-        _applyFilters(); // Apply filters immediately after scanning
+        _applyFilters(); 
         _isLoading = false;
       });
     }
   }
 
-  // --- FILTER LOGIC ---
   void _applyFilters() {
     String keyword = _searchController.text.toLowerCase();
-    
-    // Start with all files
     List<FileSystemEntity> temp = _allFiles;
 
-    // 1. Filter by Category
     if (_selectedCategory == 'Documents') {
       temp = temp.where((f) {
         String path = f.path.toLowerCase();
@@ -66,7 +70,6 @@ class _HomeScreenState extends State<HomeScreen> {
       }).toList();
     }
 
-    // 2. Filter by Search Keyword
     if (keyword.isNotEmpty) {
       temp = temp.where((file) => 
         file.path.split('/').last.toLowerCase().contains(keyword)
@@ -92,16 +95,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _scanDocument() async {
     var status = await Permission.camera.status;
-    if (!status.isGranted) {
-      status = await Permission.camera.request();
-    }
+    if (!status.isGranted) status = await Permission.camera.request();
 
     if (status.isDenied) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Camera permission is required to scan documents."))
-        );
-      }
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Camera permission is required.")));
       return;
     }
     
@@ -111,19 +108,10 @@ class _HomeScreenState extends State<HomeScreen> {
           context: context,
           builder: (ctx) => AlertDialog(
             title: const Text("Permission Required"),
-            content: const Text("Camera access is permanently denied. Please enable it in your phone settings to scan documents."),
+            content: const Text("Camera access is permanently denied. Please enable it in Settings."),
             actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx), 
-                child: const Text("Cancel")
-              ),
-              ElevatedButton(
-                onPressed: () { 
-                  Navigator.pop(ctx); 
-                  openAppSettings(); 
-                }, 
-                child: const Text("Open Settings")
-              ),
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancel")),
+              ElevatedButton(onPressed: () { Navigator.pop(ctx); openAppSettings(); }, child: const Text("Settings")),
             ],
           )
         );
@@ -137,11 +125,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _openReader(photo.path, "Scanned Document");
       }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Error opening camera: $e"))
-        );
-      }
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e")));
     }
   }
 
@@ -154,44 +138,71 @@ class _HomeScreenState extends State<HomeScreen> {
     ).then((_) {});
   }
 
-  // --- NEW: ABOUT DIALOG ---
+  // --- SLEEP TIMER DIALOG ---
+  void _showSleepTimerDialog() {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) {
+        return Container(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text("Set Sleep Timer", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.deepPurple)),
+                  // Show cancel button if timer is active
+                  if (_sleepTimer != null && _sleepTimer!.isActive)
+                    TextButton(
+                      onPressed: () {
+                        _sleepTimer?.cancel();
+                        Navigator.pop(ctx);
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Timer Cancelled")));
+                      },
+                      child: const Text("Cancel", style: TextStyle(color: Colors.red)),
+                    )
+                ],
+              ),
+              const SizedBox(height: 10),
+              ListTile(leading: const Icon(Icons.timer_10), title: const Text("10 Minutes"), onTap: () => _setTimer(10, ctx)),
+              ListTile(leading: const Icon(Icons.timer), title: const Text("20 Minutes"), onTap: () => _setTimer(20, ctx)),
+              ListTile(leading: const Icon(Icons.timelapse), title: const Text("30 Minutes"), onTap: () => _setTimer(30, ctx)),
+              ListTile(leading: const Icon(Icons.hourglass_bottom), title: const Text("45 Minutes"), onTap: () => _setTimer(45, ctx)),
+              ListTile(leading: const Icon(Icons.bedtime), title: const Text("60 Minutes"), onTap: () => _setTimer(60, ctx)),
+            ],
+          ),
+        );
+      }
+    );
+  }
+
+  void _setTimer(int minutes, BuildContext ctx) {
+    _sleepTimer?.cancel(); // Cancel existing
+    Navigator.pop(ctx);
+    
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Audio will stop in $minutes minutes")));
+    
+    _sleepTimer = Timer(Duration(minutes: minutes), () {
+      // Stop Audio Globally using the handler we exposed
+      if (globalAudioHandler != null) {
+        globalAudioHandler!.pause();
+        globalAudioHandler!.stop();
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Sleep Timer: Audio Paused")));
+      }
+    });
+  }
+
   void _showAboutDialog() {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Row(
-          children: const [
-            Icon(Icons.audio_file, color: Colors.deepPurple),
-            SizedBox(width: 10),
-            Text("AUDIRE"),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: const [
-            Text("Version 2.0.0", style: TextStyle(fontWeight: FontWeight.bold)),
-            SizedBox(height: 10),
-            Text("The Ultimate Offline Audio Reader."),
-            SizedBox(height: 20),
-            Text("Features:", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.deepPurple)),
-            Text("• Universal Document Reader"),
-            Text("• Offline Translation (Bemba, Nyanja)"),
-            Text("• Smart History & Resume"),
-            SizedBox(height: 20),
-            Divider(),
-            SizedBox(height: 10),
-            Text("Built with ❤️ by Chiza Labs"),
-            Text("© 2025 All Rights Reserved", style: TextStyle(fontSize: 12, color: Colors.grey)),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text("Close", style: TextStyle(color: Colors.deepPurple)),
-          ),
-        ],
+        title: const Text("AUDIRE"),
+        content: const Text("Version 2.0.0\nBuilt by Chiza Labs.\n\nThe Ultimate Offline Audio Reader."),
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Close"))],
       ),
     );
   }
@@ -218,7 +229,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // Helper for Category Chips
   Widget _buildCategoryChip(String label) {
     bool isSelected = _selectedCategory == label;
     return Padding(
@@ -311,7 +321,6 @@ class _HomeScreenState extends State<HomeScreen> {
               ],
             ),
 
-            // --- CATEGORY CHIPS ---
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(vertical: 10),
@@ -387,7 +396,6 @@ class _HomeScreenState extends State<HomeScreen> {
           ListTile(leading: const Icon(Icons.library_books), title: const Text('My Library'), onTap: () => Navigator.pop(context)),
           ListTile(leading: const Icon(Icons.history), title: const Text('History'), onTap: () { Navigator.pop(context); Navigator.push(context, MaterialPageRoute(builder: (context) => const HistoryScreen())); }),
           
-          // NEW BOOKMARKS TILE
           ListTile(
             leading: const Icon(Icons.bookmarks), 
             title: const Text('Bookmarks'), 
@@ -398,7 +406,19 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
 
           ListTile(leading: const Icon(Icons.menu_book), title: const Text('Offline Dictionary'), onTap: () { Navigator.pop(context); Navigator.push(context, MaterialPageRoute(builder: (context) => const DictionaryScreen())); }),
+          
           const Divider(),
+          
+          // --- NEW: SLEEP TIMER IN DRAWER ---
+          ListTile(
+            leading: const Icon(Icons.timer), 
+            title: const Text('Sleep Timer'), 
+            onTap: () { 
+              Navigator.pop(context); 
+              _showSleepTimerDialog(); 
+            }
+          ),
+
           ListTile(
             leading: const Icon(Icons.settings), 
             title: const Text('Settings'), 

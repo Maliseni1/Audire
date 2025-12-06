@@ -16,7 +16,7 @@ import '../services/dictionary_service.dart';
 import '../services/audio_manager.dart';
 import '../services/bookmark_service.dart'; 
 
-// --- BACKGROUND WORKERS ---
+// --- WORKERS ---
 String _backgroundCleanText(String text) => text.replaceAll(RegExp(r'\s+'), ' ').trim();
 
 List<String> _backgroundPagination(String text) {
@@ -82,7 +82,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
   int _currentWordEnd = 0;
   int _currentSpeechOffset = 0; 
   
-  // Store bookmark indices for the current page to render symbols
   Set<int> _pageBookmarkIndices = {};
   
   Timer? _debounce;
@@ -105,32 +104,21 @@ class _ReaderScreenState extends State<ReaderScreen> {
     super.dispose();
   }
 
-  // --- LOAD BOOKMARKS ---
   Future<void> _refreshBookmarks() async {
     List<Map<String, dynamic>> fileBookmarks = await BookmarkService.getBookmarksForFile(widget.filePath);
-    
-    // Filter bookmarks that belong to the current page
     Set<int> indices = {};
     int pageStart = _currentPageIndex * 3000;
     int pageEnd = pageStart + _currentPageContent.length;
 
     for (var b in fileBookmarks) {
       int idx = b['index'] as int;
-      // Check if this global index falls within current page range
       if (idx >= pageStart && idx < pageEnd) {
-        // Convert global index to page-relative index for rendering
         indices.add(idx - pageStart);
       }
     }
-
-    if (mounted) {
-      setState(() {
-        _pageBookmarkIndices = indices;
-      });
-    }
+    if (mounted) setState(() => _pageBookmarkIndices = indices);
   }
 
-  // --- AUDIO SETUP ---
   Future<void> _setupAudioSystem() async {
     final session = await AudioSession.instance;
     await session.configure(const AudioSessionConfiguration.music());
@@ -184,7 +172,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _initVoices();
   }
 
-  // ... Voices & Logic ...
   Future<void> _initVoices() async {
     await Future.delayed(const Duration(milliseconds: 500));
     try {
@@ -288,7 +275,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
       _currentWordEnd = 0;
       _currentSpeechOffset = 0;
     });
-    // Load bookmarks for this new page
     _refreshBookmarks();
   }
 
@@ -369,16 +355,14 @@ class _ReaderScreenState extends State<ReaderScreen> {
     await BookmarkService.deleteBookmarkByPosition(widget.filePath, globalIndex);
     _refreshBookmarks();
     if (mounted) {
-      // Check if there's a dialog open (like the word tap menu) and close it if so
       if (Navigator.canPop(context)) {
-          // Ideally we check if it is indeed our dialog, but this is a safe bet for the context
          // Navigator.pop(context); 
       }
     }
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Bookmark Removed")));
   }
   
-  // --- NEW: Helper for bookmark popup info ---
+  // --- ADDED MISSING METHOD ---
   void _showBookmarkInfo(String snippet, int index) {
     showDialog(
       context: context,
@@ -386,17 +370,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
         title: const Text("Bookmark"),
         content: Text(snippet),
         actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              _removeBookmark(index);
-            },
-            child: const Text("Delete", style: TextStyle(color: Colors.red)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text("Close"),
-          ),
+          TextButton(onPressed: () { Navigator.pop(ctx); _removeBookmark(index); }, child: const Text("Delete", style: TextStyle(color: Colors.red))),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Close")),
         ],
       ),
     );
@@ -524,6 +499,25 @@ class _ReaderScreenState extends State<ReaderScreen> {
     });
   }
 
+  void _showLanguagePicker() {
+    showModalBottomSheet(context: context, builder: (ctx) {
+      return Container(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text("Translate To", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+            ListTile(title: const Text('English (Original)'), onTap: () { Navigator.pop(ctx); _changeLanguage('en'); }),
+            ListTile(title: const Text('Bemba (Zambia)'), onTap: () { Navigator.pop(ctx); _changeLanguage('bem'); }),
+            ListTile(title: const Text('Nyanja (Zambia)'), onTap: () { Navigator.pop(ctx); _changeLanguage('nya'); }),
+            ListTile(title: const Text('French'), onTap: () { Navigator.pop(ctx); _changeLanguage('fr'); }),
+            ListTile(title: const Text('Spanish'), onTap: () { Navigator.pop(ctx); _changeLanguage('es'); }),
+          ],
+        ),
+      );
+    });
+  }
+
   void _showAudioSettings() {
     showModalBottomSheet(context: context, builder: (ctx) {
       return StatefulBuilder(builder: (c, setModalState) {
@@ -571,7 +565,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 onTap: () async {
                   if (isBookmarked) {
                     _removeBookmark(startIndex);
-                    // Close the bottom sheet after removing
                     Navigator.pop(ctx);
                   } else {
                     Navigator.pop(ctx);
@@ -586,7 +579,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
       }
     );
   }
-
+  
+  // --- ADDED MISSING METHOD ---
   void _showDefinition(String word) async {
     String cleanWord = word.replaceAll(RegExp(r'[^\w\s]'), '');
     String? def = await DictionaryService.getDefinition(cleanWord);
@@ -597,31 +591,50 @@ class _ReaderScreenState extends State<ReaderScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.fileName, style: const TextStyle(fontSize: 14)),
+        title: Text(widget.fileName, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
         actions: [
-          IconButton(icon: const Icon(Icons.bookmark_add), onPressed: _addBookmark, tooltip: "Bookmark"),
-          IconButton(icon: const Icon(Icons.save_alt), onPressed: _saveToAudioFile),
-          IconButton(icon: const Icon(Icons.record_voice_over), onPressed: _showVoicePicker),
           PopupMenuButton<String>(
-            icon: const Icon(Icons.translate),
-            onSelected: _changeLanguage,
-            itemBuilder: (context) => [
-              const PopupMenuDivider(height: 20),
-              const PopupMenuItem(value: 'en', child: Text('English')),
-              const PopupMenuItem(value: 'bem', child: Text('Bemba')),
-              const PopupMenuItem(value: 'nya', child: Text('Nyanja')),
-              const PopupMenuItem(value: 'fr', child: Text('French')),
-              const PopupMenuItem(value: 'es', child: Text('Spanish')),
-            ],
+            onSelected: (value) {
+              switch (value) {
+                case 'bookmark': _addBookmark(); break;
+                case 'save': _saveToAudioFile(); break;
+                case 'voice': _showVoicePicker(); break;
+                case 'translate': _showLanguagePicker(); break;
+                case 'settings': _showAudioSettings(); break;
+              }
+            },
+            itemBuilder: (BuildContext context) {
+              return [
+                const PopupMenuItem(
+                  value: 'bookmark',
+                  child: Row(children: [Icon(Icons.bookmark_add, color: Colors.grey), SizedBox(width: 10), Text('Bookmark Page')]),
+                ),
+                const PopupMenuItem(
+                  value: 'save',
+                  child: Row(children: [Icon(Icons.save_alt, color: Colors.grey), SizedBox(width: 10), Text('Save Audio')]),
+                ),
+                const PopupMenuItem(
+                  value: 'voice',
+                  child: Row(children: [Icon(Icons.record_voice_over, color: Colors.grey), SizedBox(width: 10), Text('Select Voice')]),
+                ),
+                const PopupMenuItem(
+                  value: 'translate',
+                  child: Row(children: [Icon(Icons.translate, color: Colors.grey), SizedBox(width: 10), Text('Translate')]),
+                ),
+                const PopupMenuItem(
+                  value: 'settings',
+                  child: Row(children: [Icon(Icons.tune, color: Colors.grey), SizedBox(width: 10), Text('Audio Settings')]),
+                ),
+              ];
+            },
           ),
-          IconButton(icon: const Icon(Icons.tune), onPressed: _showAudioSettings),
         ],
       ),
       body: Column(
         children: [
           Expanded(
             child: _isLoading 
-              ? Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [const CircularProgressIndicator(), const SizedBox(height: 20), Text(_loadingMessage)]))
+              ? Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [const CircularProgressIndicator(), const SizedBox(height: 20), Text(_loadingMessage, textAlign: TextAlign.center)]))
               : Padding(padding: const EdgeInsets.all(16.0), child: SingleChildScrollView(controller: _scrollController, child: _buildInteractiveText())),
           ),
           if (!_isLoading && _pages.isNotEmpty)
@@ -656,7 +669,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   Widget _buildInteractiveText() {
     if (_currentPageContent.isEmpty) return const Text("No text.");
-    List<InlineSpan> spans = []; // FIXED: Changed TextSpan to InlineSpan
+    List<InlineSpan> spans = [];
     int currentIndex = 0;
     List<String> rawWords = _currentPageContent.split(' ');
     for (String word in rawWords) {
