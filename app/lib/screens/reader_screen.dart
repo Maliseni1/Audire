@@ -1,26 +1,27 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/gestures.dart'; 
+import 'package:flutter/gestures.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:read_pdf_text/read_pdf_text.dart';
-import 'package:docx_to_text/docx_to_text.dart'; 
+import 'package:docx_to_text/docx_to_text.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
-import 'package:path_provider/path_provider.dart'; 
-import 'package:audio_session/audio_session.dart'; 
+import 'package:path_provider/path_provider.dart';
+import 'package:audio_session/audio_session.dart';
 import 'package:audio_service/audio_service.dart';
 import 'dart:io';
-import 'dart:async'; 
+import 'dart:async';
 import '../services/translation_service.dart';
 import '../services/history_service.dart';
 import '../services/dictionary_service.dart';
 import '../services/audio_manager.dart';
-import '../services/bookmark_service.dart'; 
+import '../services/bookmark_service.dart';
 
-// --- WORKERS ---
-String _backgroundCleanText(String text) => text.replaceAll(RegExp(r'\s+'), ' ').trim();
+// --- BACKGROUND WORKERS ---
+String _backgroundCleanText(String text) =>
+    text.replaceAll(RegExp(r'\s+'), ' ').trim();
 
 List<String> _backgroundPagination(String text) {
-  const int pageSize = 3000; 
+  const int pageSize = 3000;
   List<String> pages = [];
   if (text.isEmpty) return [""];
   int start = 0;
@@ -49,7 +50,12 @@ class ReaderScreen extends StatefulWidget {
   final String fileName;
   final int? initialIndex;
 
-  const ReaderScreen({super.key, required this.filePath, required this.fileName, this.initialIndex});
+  const ReaderScreen({
+    super.key,
+    required this.filePath,
+    required this.fileName,
+    this.initialIndex,
+  });
 
   @override
   State<ReaderScreen> createState() => _ReaderScreenState();
@@ -58,20 +64,20 @@ class ReaderScreen extends StatefulWidget {
 class _ReaderScreenState extends State<ReaderScreen> {
   final FlutterTts _flutterTts = FlutterTts();
   final ScrollController _scrollController = ScrollController();
-  
+
   TtsAudioHandler? _audioHandler;
   StreamSubscription? _playbackSubscription;
   StreamSubscription? _eventSubscription;
 
-  String _fullOriginalText = ""; 
+  String _fullOriginalText = "";
   List<String> _pages = [];
   int _currentPageIndex = 0;
-  String _currentPageContent = ""; 
-  
+  String _currentPageContent = "";
+
   bool _isLoading = true;
   String _loadingMessage = "Initializing...";
   bool _isPlaying = false;
-  
+
   double _speechRate = 0.5;
   double _pitch = 1.0;
   String _currentLang = 'en';
@@ -80,11 +86,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   int _currentWordStart = 0;
   int _currentWordEnd = 0;
-  int _currentSpeechOffset = 0; 
-  
+  int _currentSpeechOffset = 0;
   Set<int> _pageBookmarkIndices = {};
-  
+
   Timer? _debounce;
+  Timer? _sleepTimer;
 
   @override
   void initState() {
@@ -95,46 +101,47 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   @override
   void dispose() {
-    _flutterTts.stop();
+    // Explicitly stop audio on exit
+    _stopPlayback();
     _playbackSubscription?.cancel();
     _eventSubscription?.cancel();
     _debounce?.cancel();
+    _sleepTimer?.cancel();
     _scrollController.dispose();
-    HistoryService.saveProgress(widget.filePath, widget.fileName, _currentPageIndex * 3000);
+    HistoryService.saveProgress(
+      widget.filePath,
+      widget.fileName,
+      _currentPageIndex * 3000,
+    );
     super.dispose();
   }
 
-  Future<void> _refreshBookmarks() async {
-    List<Map<String, dynamic>> fileBookmarks = await BookmarkService.getBookmarksForFile(widget.filePath);
-    Set<int> indices = {};
-    int pageStart = _currentPageIndex * 3000;
-    int pageEnd = pageStart + _currentPageContent.length;
-
-    for (var b in fileBookmarks) {
-      int idx = b['index'] as int;
-      if (idx >= pageStart && idx < pageEnd) {
-        indices.add(idx - pageStart);
-      }
-    }
-    if (mounted) setState(() => _pageBookmarkIndices = indices);
-  }
-
+  // --- AUDIO & CONTROLS SETUP ---
   Future<void> _setupAudioSystem() async {
     final session = await AudioSession.instance;
     await session.configure(const AudioSessionConfiguration.music());
     _audioHandler = await TtsAudioHandler.init();
-    
-    _audioHandler?.setMediaItem(widget.fileName, Duration.zero);
-    _audioHandler?.setPlaybackState(isPlaying: false);
 
+    // Initial Metadata
+    _updateLockScreenInfo();
+
+    // Listen: Play/Pause/Stop
     _playbackSubscription = _audioHandler?.playbackState.listen((state) {
       if (state.playing && !_isPlaying) {
-        _playCurrentPage(); 
+        _playCurrentPage();
       } else if (!state.playing && _isPlaying) {
-        _pausePlayback(); 
+        // Distinguish Pause vs Stop based on processing state if needed,
+        // but for now both mean "Halt TTS"
+        _pausePlayback();
+      }
+
+      // If processingState is IDLE, it means STOP was pressed
+      if (state.processingState == AudioProcessingState.idle && _isPlaying) {
+        _stopPlayback();
       }
     });
 
+    // Listen: Seek/Rewind
     _eventSubscription = _audioHandler?.customEvent.listen((event) {
       if (event == 'fastForward') _skipForward();
       if (event == 'rewind') _skipBackward();
@@ -143,15 +150,21 @@ class _ReaderScreenState extends State<ReaderScreen> {
     await _flutterTts.awaitSpeakCompletion(true);
     await _flutterTts.setSpeechRate(_speechRate);
     await _flutterTts.setPitch(_pitch);
-    
-    await _flutterTts.setIosAudioCategory(IosTextToSpeechAudioCategory.playback, [
-      IosTextToSpeechAudioCategoryOptions.defaultToSpeaker,
-      IosTextToSpeechAudioCategoryOptions.allowBluetooth,
-      IosTextToSpeechAudioCategoryOptions.allowBluetoothA2DP,
-      IosTextToSpeechAudioCategoryOptions.mixWithOthers
-    ]);
 
-    _flutterTts.setProgressHandler((String text, int start, int end, String word) {
+    await _flutterTts
+        .setIosAudioCategory(IosTextToSpeechAudioCategory.playback, [
+          IosTextToSpeechAudioCategoryOptions.defaultToSpeaker,
+          IosTextToSpeechAudioCategoryOptions.allowBluetooth,
+          IosTextToSpeechAudioCategoryOptions.allowBluetoothA2DP,
+          IosTextToSpeechAudioCategoryOptions.mixWithOthers,
+        ]);
+
+    _flutterTts.setProgressHandler((
+      String text,
+      int start,
+      int end,
+      String word,
+    ) {
       if (!mounted) return;
       setState(() {
         _currentWordStart = _currentSpeechOffset + start;
@@ -164,12 +177,275 @@ class _ReaderScreenState extends State<ReaderScreen> {
       if (_currentPageIndex < _pages.length - 1) {
         _changePage(_currentPageIndex + 1, autoPlay: true);
       } else {
-        setState(() => _isPlaying = false);
-        _audioHandler?.setPlaybackState(isPlaying: false);
+        // Finished Book
+        _stopPlayback();
       }
     });
-    
+
     _initVoices();
+  }
+
+  void _updateLockScreenInfo() {
+    String pageInfo =
+        "Page ${_currentPageIndex + 1} of ${_pages.isEmpty ? '?' : _pages.length}";
+    _audioHandler?.setMediaItem(widget.fileName, pageInfo, Duration.zero);
+  }
+
+  // --- ROBUST PLAYBACK CONTROLS ---
+
+  Future<void> _playCurrentPage() async {
+    // 1. Set State
+    setState(() => _isPlaying = true);
+
+    // 2. Set Engine Params
+    await _flutterTts.setSpeechRate(_speechRate);
+    await _flutterTts.setPitch(_pitch);
+
+    // 3. Calculate Text Chunk
+    String textToSpeak = _currentPageContent;
+    if (_currentWordStart > 0 &&
+        _currentWordStart < _currentPageContent.length) {
+      textToSpeak = _currentPageContent.substring(_currentWordStart);
+      _currentSpeechOffset = _currentWordStart;
+    } else {
+      _currentSpeechOffset = 0;
+    }
+
+    // 4. Update Notification
+    _audioHandler?.setPlaybackState(isPlaying: true);
+    _updateLockScreenInfo();
+
+    // 5. Speak
+    await _flutterTts.speak(textToSpeak);
+  }
+
+  Future<void> _pausePlayback() async {
+    // Force stop engine immediately
+    await _flutterTts.stop();
+
+    if (mounted) {
+      setState(() => _isPlaying = false);
+    }
+    _audioHandler?.setPlaybackState(isPlaying: false);
+  }
+
+  Future<void> _stopPlayback() async {
+    await _flutterTts.stop();
+    if (mounted) {
+      setState(() {
+        _isPlaying = false;
+        // Reset position to start of current page
+        _currentWordStart = 0;
+        _currentWordEnd = 0;
+        _currentSpeechOffset = 0;
+      });
+    }
+    _audioHandler?.stop(); // Clears notification
+  }
+
+  // --- SKIP CONTROLS ---
+  void _skipForward() {
+    int newPos = _currentWordStart + 150;
+    if (newPos >= _currentPageContent.length)
+      newPos = _currentPageContent.length - 1;
+    _playFromIndex(newPos);
+  }
+
+  void _skipBackward() {
+    int newPos = _currentWordStart - 150;
+    if (newPos < 0) newPos = 0;
+    _playFromIndex(newPos);
+  }
+
+  void _playFromIndex(int index) async {
+    setState(() {
+      _currentWordStart = index;
+      _currentSpeechOffset = index;
+      _isPlaying = true;
+    });
+
+    await _flutterTts.stop();
+
+    await _flutterTts.setSpeechRate(_speechRate);
+    await _flutterTts.setPitch(_pitch);
+    _audioHandler?.setPlaybackState(isPlaying: true);
+
+    if (index < _currentPageContent.length) {
+      String textToSpeak = _currentPageContent.substring(index);
+      await _flutterTts.speak(textToSpeak);
+    }
+  }
+
+  Future<void> _togglePlay() async {
+    if (_isPlaying) {
+      await _pausePlayback();
+    } else {
+      await _playCurrentPage();
+    }
+  }
+
+  // ... (File Logic, Extraction, Caching, Voice Init - Standard) ...
+
+  Future<void> _loadOrExtractText() async {
+    setState(() {
+      _isLoading = true;
+      _loadingMessage = "Checking cache...";
+    });
+    String? cachedText = await _checkCache();
+    if (cachedText != null && cachedText.isNotEmpty) {
+      await _processFullText(cachedText);
+      return;
+    }
+    await _extractTextAndCache();
+  }
+
+  Future<void> _processFullText(String fullText) async {
+    setState(() {
+      _loadingMessage = "Paginating document...";
+    });
+    List<String> pages = await compute(_backgroundPagination, fullText);
+    int savedGlobalIndex =
+        widget.initialIndex ??
+        await HistoryService.getLastPosition(widget.filePath);
+    int savedPage = (savedGlobalIndex / 3000).floor();
+    if (savedPage >= pages.length) savedPage = 0;
+
+    if (mounted) {
+      setState(() {
+        _fullOriginalText = fullText;
+        _pages = pages;
+        _currentPageIndex = savedPage;
+        _isLoading = false;
+      });
+      await _loadPageContent(savedPage);
+      // New: Update Audio Info
+      _updateLockScreenInfo();
+
+      if (widget.initialIndex != null) {
+        int pageOffset = savedGlobalIndex % 3000;
+        if (pageOffset < _pages[savedPage].length) {
+          _currentWordStart = pageOffset;
+          _currentSpeechOffset = pageOffset;
+        }
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("Jumped to bookmark")));
+      } else if (savedPage > 0) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Resumed at page ${savedPage + 1}")),
+        );
+      }
+    }
+  }
+
+  Future<void> _loadPageContent(int index) async {
+    if (index < 0 || index >= _pages.length) return;
+    String content = _pages[index];
+    if (_currentLang != 'en') {
+      setState(() {
+        _loadingMessage = "Translating...";
+        _isLoading = true;
+      });
+      await Future.delayed(const Duration(milliseconds: 50));
+      content = await TranslationService.translate(content, _currentLang);
+      setState(() {
+        _isLoading = false;
+      });
+    }
+    setState(() {
+      _currentPageContent = content;
+      _currentWordStart = 0;
+      _currentWordEnd = 0;
+      _currentSpeechOffset = 0;
+    });
+    _refreshBookmarks();
+    _updateLockScreenInfo(); // Ensure lock screen knows we changed page
+  }
+
+  Future<void> _changePage(int newIndex, {bool autoPlay = false}) async {
+    if (newIndex < 0 || newIndex >= _pages.length) return;
+    await _flutterTts.stop();
+    setState(() {
+      _currentPageIndex = newIndex;
+    });
+    await _loadPageContent(newIndex);
+    if (autoPlay) {
+      _playCurrentPage();
+    } else {
+      setState(() => _isPlaying = false);
+      _audioHandler?.setPlaybackState(isPlaying: false);
+    }
+  }
+
+  Future<void> _extractTextAndCache() async {
+    try {
+      File file = File(widget.filePath);
+      String rawText = "";
+      String ext = widget.filePath.toLowerCase();
+      setState(() {
+        _loadingMessage = "Processing file...";
+      });
+      if (ext.endsWith('.pdf')) {
+        rawText = await ReadPdfText.getPDFtext(widget.filePath);
+      } else if (ext.endsWith('.txt')) {
+        rawText = await file.readAsString();
+      } else if (ext.endsWith('.docx')) {
+        final bytes = await file.readAsBytes();
+        rawText = docxToText(bytes);
+      } else if (ext.endsWith('.jpg') ||
+          ext.endsWith('.png') ||
+          ext.endsWith('.jpeg')) {
+        final inputImage = InputImage.fromFile(file);
+        final textRecognizer = TextRecognizer(
+          script: TextRecognitionScript.latin,
+        );
+        try {
+          final RecognizedText recognizedText = await textRecognizer
+              .processImage(inputImage);
+          rawText = recognizedText.text;
+        } finally {
+          textRecognizer.close();
+        }
+        if (rawText.isEmpty) rawText = "No text found.";
+      } else {
+        rawText = "Unsupported file type.";
+      }
+      setState(() {
+        _loadingMessage = "Optimizing...";
+      });
+      String cleanText = await compute(_backgroundCleanText, rawText);
+      await _saveToCache(cleanText);
+      await _processFullText(cleanText);
+    } catch (e) {
+      if (mounted)
+        setState(() {
+          _isLoading = false;
+          _currentPageContent = "Error reading file: $e";
+        });
+    }
+  }
+
+  Future<String?> _checkCache() async {
+    try {
+      final directory = await getApplicationCacheDirectory();
+      final String cacheKey = widget.filePath.hashCode.toString();
+      final File cacheFile = File('${directory.path}/$cacheKey.txt');
+      if (await cacheFile.exists()) return await cacheFile.readAsString();
+    } catch (e) {
+      print("Cache error: $e");
+    }
+    return null;
+  }
+
+  Future<void> _saveToCache(String text) async {
+    try {
+      final directory = await getApplicationCacheDirectory();
+      final String cacheKey = widget.filePath.hashCode.toString();
+      final File cacheFile = File('${directory.path}/$cacheKey.txt');
+      await cacheFile.writeAsString(text);
+    } catch (e) {
+      print("Save cache error: $e");
+    }
   }
 
   Future<void> _initVoices() async {
@@ -191,15 +467,27 @@ class _ReaderScreenState extends State<ReaderScreen> {
           }
         }
       }
-      if (mounted) setState(() { _voices = cleanVoices; });
-    } catch (e) { print("Error fetching voices: $e"); }
+      if (mounted)
+        setState(() {
+          _voices = cleanVoices;
+        });
+    } catch (e) {
+      print("Error: $e");
+    }
   }
 
   String _formatVoiceName(String rawName, String locale) {
-    Map<String, String> langs = {'en': 'English', 'fr': 'French', 'es': 'Spanish'};
+    Map<String, String> langs = {
+      'en': 'English',
+      'fr': 'French',
+      'es': 'Spanish',
+    };
     String langCode = locale.split('-')[0].toLowerCase();
     String displayLang = langs[langCode] ?? langCode.toUpperCase();
-    if (locale.contains('-')) { String country = locale.split('-')[1].toUpperCase(); return "$displayLang ($country)"; }
+    if (locale.contains('-')) {
+      String country = locale.split('-')[1].toUpperCase();
+      return "$displayLang ($country)";
+    }
     return displayLang;
   }
 
@@ -207,10 +495,14 @@ class _ReaderScreenState extends State<ReaderScreen> {
     String lowerName = rawName.toLowerCase();
     String label = "";
     IconData icon = Icons.record_voice_over;
-    if (lowerName.contains("female") || lowerName.contains("-f-") || lowerName.contains("woman")) {
+    if (lowerName.contains("female") ||
+        lowerName.contains("-f-") ||
+        lowerName.contains("woman")) {
       label = "Woman's Voice";
       icon = Icons.face_3;
-    } else if (lowerName.contains("male") || lowerName.contains("-m-") || lowerName.contains("man")) {
+    } else if (lowerName.contains("male") ||
+        lowerName.contains("-m-") ||
+        lowerName.contains("man")) {
       label = "Man's Voice";
       icon = Icons.face;
     }
@@ -219,242 +511,45 @@ class _ReaderScreenState extends State<ReaderScreen> {
     return {"title": title, "subtitle": locale, "icon": icon};
   }
 
-  Future<void> _loadOrExtractText() async {
-    setState(() { _isLoading = true; _loadingMessage = "Checking cache..."; });
-    String? cachedText = await _checkCache();
-    if (cachedText != null && cachedText.isNotEmpty) {
-      await _processFullText(cachedText);
-      return;
-    }
-    await _extractTextAndCache();
-  }
-
-  Future<void> _processFullText(String fullText) async {
-    setState(() { _loadingMessage = "Paginating document..."; });
-    List<String> pages = await compute(_backgroundPagination, fullText);
-    
-    int startGlobalIndex = widget.initialIndex ?? await HistoryService.getLastPosition(widget.filePath);
-    int savedPage = (startGlobalIndex / 3000).floor();
-    if (savedPage >= pages.length) savedPage = 0;
-
-    if (mounted) {
-      setState(() {
-        _fullOriginalText = fullText;
-        _pages = pages;
-        _currentPageIndex = savedPage;
-        _isLoading = false;
-      });
-      await _loadPageContent(savedPage);
-      _audioHandler?.setMediaItem(widget.fileName, Duration.zero);
-      
-      if (widget.initialIndex != null) {
-        int pageOffset = startGlobalIndex % 3000;
-        if (pageOffset < _pages[savedPage].length) {
-           _currentWordStart = pageOffset;
-           _currentSpeechOffset = pageOffset;
-        }
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Jumped to bookmark")));
-      } else if (savedPage > 0) {
-         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Resumed at page ${savedPage + 1}")));
-      }
-    }
-  }
-
-  Future<void> _loadPageContent(int index) async {
-    if (index < 0 || index >= _pages.length) return;
-    String content = _pages[index];
-    if (_currentLang != 'en') {
-      setState(() { _loadingMessage = "Translating page..."; _isLoading = true; });
-      await Future.delayed(const Duration(milliseconds: 50));
-      content = await TranslationService.translate(content, _currentLang);
-      setState(() { _isLoading = false; });
-    }
-    setState(() {
-      _currentPageContent = content;
-      _currentWordStart = 0;
-      _currentWordEnd = 0;
-      _currentSpeechOffset = 0;
-    });
-    _refreshBookmarks();
-  }
-
-  Future<void> _changePage(int newIndex, {bool autoPlay = false}) async {
-    if (newIndex < 0 || newIndex >= _pages.length) return;
-    await _flutterTts.stop();
-    setState(() { _currentPageIndex = newIndex; });
-    await _loadPageContent(newIndex);
-    if (autoPlay) {
-      _playCurrentPage();
-    } else {
-      setState(() => _isPlaying = false);
-      _audioHandler?.setPlaybackState(isPlaying: false);
-    }
-  }
-
-  Future<void> _playCurrentPage() async {
-    setState(() => _isPlaying = true);
-    await _flutterTts.setSpeechRate(_speechRate);
-    await _flutterTts.setPitch(_pitch);
-    String textToSpeak = _currentPageContent;
-    if (_currentWordStart > 0 && _currentWordStart < _currentPageContent.length) {
-      textToSpeak = _currentPageContent.substring(_currentWordStart);
-      _currentSpeechOffset = _currentWordStart; 
-    } else {
-      _currentSpeechOffset = 0;
-    }
-    await _flutterTts.speak(textToSpeak);
-    _audioHandler?.setPlaybackState(isPlaying: true);
-  }
-
-  Future<void> _pausePlayback() async {
-    await _flutterTts.stop();
-    setState(() => _isPlaying = false);
-    _audioHandler?.setPlaybackState(isPlaying: false);
-  }
-
-  void _skipForward() {
-    int newPos = _currentWordStart + 150; 
-    if (newPos >= _currentPageContent.length) newPos = _currentPageContent.length - 1;
-    _playFromIndex(newPos);
-  }
-
-  void _skipBackward() {
-    int newPos = _currentWordStart - 150;
-    if (newPos < 0) newPos = 0;
-    _playFromIndex(newPos);
-  }
-
-  void _playFromIndex(int index) async {
-    setState(() { _currentWordStart = index; _currentSpeechOffset = index; _isPlaying = true; });
-    await _flutterTts.stop(); 
-    await _flutterTts.setSpeechRate(_speechRate);
-    await _flutterTts.setPitch(_pitch);
-    _audioHandler?.setPlaybackState(isPlaying: true);
-    if (index < _currentPageContent.length) {
-      await _flutterTts.speak(_currentPageContent.substring(index));
-    }
-  }
-
-  Future<void> _togglePlay() async {
-    if (_isPlaying) await _pausePlayback(); else await _playCurrentPage();
-  }
-
-  Future<void> _addBookmark([int? targetIndex]) async {
-    int localIndex = targetIndex ?? _currentWordStart;
-    int globalIndex = (_currentPageIndex * 3000) + localIndex;
-    int endSnippet = localIndex + 50;
-    if (endSnippet > _currentPageContent.length) endSnippet = _currentPageContent.length;
-    String snippet = _currentPageContent.substring(localIndex, endSnippet).replaceAll("\n", " ") + "...";
-    await BookmarkService.addBookmark(filePath: widget.filePath, fileName: widget.fileName, index: globalIndex, snippet: snippet);
-    _refreshBookmarks(); 
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Bookmark Saved!")));
-  }
-
-  Future<void> _removeBookmark(int localIndex) async {
-    int globalIndex = (_currentPageIndex * 3000) + localIndex;
-    await BookmarkService.deleteBookmarkByPosition(widget.filePath, globalIndex);
-    _refreshBookmarks();
-    if (mounted) {
-      if (Navigator.canPop(context)) {
-         // Navigator.pop(context); 
-      }
-    }
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Bookmark Removed")));
-  }
-  
-  // --- ADDED MISSING METHOD ---
-  void _showBookmarkInfo(String snippet, int index) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text("Bookmark"),
-        content: Text(snippet),
-        actions: [
-          TextButton(onPressed: () { Navigator.pop(ctx); _removeBookmark(index); }, child: const Text("Delete", style: TextStyle(color: Colors.red))),
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Close")),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _extractTextAndCache() async {
-    try {
-      File file = File(widget.filePath);
-      String rawText = "";
-      String ext = widget.filePath.toLowerCase();
-      setState(() { _loadingMessage = "Processing file..."; });
-
-      if (ext.endsWith('.pdf')) {
-        rawText = await ReadPdfText.getPDFtext(widget.filePath);
-      } else if (ext.endsWith('.txt')) {
-        rawText = await file.readAsString();
-      } else if (ext.endsWith('.docx')) {
-        final bytes = await file.readAsBytes();
-        rawText = docxToText(bytes); 
-      } else if (ext.endsWith('.jpg') || ext.endsWith('.png') || ext.endsWith('.jpeg')) {
-        final inputImage = InputImage.fromFile(file);
-        final textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
-        try {
-          final RecognizedText recognizedText = await textRecognizer.processImage(inputImage);
-          rawText = recognizedText.text;
-        } finally { textRecognizer.close(); }
-        if (rawText.isEmpty) rawText = "No text found.";
-      } else {
-        rawText = "Unsupported file type.";
-      }
-
-      setState(() { _loadingMessage = "Optimizing..."; });
-      String cleanText = await compute(_backgroundCleanText, rawText);
-      await _saveToCache(cleanText);
-      await _processFullText(cleanText);
-    } catch (e) {
-      if (mounted) setState(() { _isLoading = false; _currentPageContent = "Error reading file: $e"; });
-    }
-  }
-
-  Future<String?> _checkCache() async {
-    try {
-      final directory = await getApplicationCacheDirectory();
-      final String cacheKey = widget.filePath.hashCode.toString(); 
-      final File cacheFile = File('${directory.path}/$cacheKey.txt');
-      if (await cacheFile.exists()) return await cacheFile.readAsString();
-    } catch (e) { print("Cache error: $e"); }
-    return null;
-  }
-
-  Future<void> _saveToCache(String text) async {
-    try {
-      final directory = await getApplicationCacheDirectory();
-      final String cacheKey = widget.filePath.hashCode.toString();
-      final File cacheFile = File('${directory.path}/$cacheKey.txt');
-      await cacheFile.writeAsString(text);
-    } catch (e) { print("Save cache error: $e"); }
-  }
-
   Future<void> _setVoice(Map<String, String> voice) async {
     try {
       await _flutterTts.stop();
       await _flutterTts.setLanguage(voice["locale"]!);
-      await _flutterTts.setVoice({"name": voice["name"]!, "locale": voice["locale"]!});
-      setState(() { _currentVoice = voice; _isPlaying = false; });
+      await _flutterTts.setVoice({
+        "name": voice["name"]!,
+        "locale": voice["locale"]!,
+      });
+      setState(() {
+        _currentVoice = voice;
+        _isPlaying = false;
+      });
       _audioHandler?.setPlaybackState(isPlaying: false);
-    } catch (e) { print("Error: $e"); }
+    } catch (e) {
+      print("Error: $e");
+    }
   }
 
   Future<void> _changeLanguage(String langCode) async {
     if (langCode == _currentLang) return;
-    setState(() { _currentLang = langCode; });
+    setState(() {
+      _currentLang = langCode;
+    });
     await _loadPageContent(_currentPageIndex);
   }
 
   Future<void> _saveToAudioFile() async {
     if (_fullOriginalText.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Wait for file to load first.")));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Wait for file to load first.")),
+      );
       return;
     }
-    setState(() { _isLoading = true; _loadingMessage = "Creating Audio File..."; });
+    setState(() {
+      _isLoading = true;
+      _loadingMessage = "Creating Audio File...";
+    });
     try {
-      String fileName = widget.fileName.replaceAll(RegExp(r'[^\w\s]+'), ''); 
+      String fileName = widget.fileName.replaceAll(RegExp(r'[^\w\s]+'), '');
       if (fileName.length > 20) fileName = fileName.substring(0, 20);
       Directory? dir;
       if (Platform.isAndroid) {
@@ -464,90 +559,234 @@ class _ReaderScreenState extends State<ReaderScreen> {
       }
       if (!await dir.exists()) dir = await getExternalStorageDirectory();
       String filePath = "${dir!.path}/AUDIRE_$fileName.wav";
-      String textToSave = _currentPageContent; 
+      String textToSave = _currentPageContent;
       await _flutterTts.synthesizeToFile(textToSave, "AUDIRE_$fileName.wav");
-      setState(() { _isLoading = false; });
-      showDialog(context: context, builder: (ctx) => AlertDialog(title: const Text("Audio Saved!"), content: Text("File saved as AUDIRE_$fileName.wav\n\nCheck your Music or Internal Storage."), actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("OK"))]));
+      setState(() {
+        _isLoading = false;
+      });
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text("Audio Saved!"),
+          content: Text(
+            "File saved as AUDIRE_$fileName.wav\n\nCheck your Music or Internal Storage.",
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text("OK"),
+            ),
+          ],
+        ),
+      );
     } catch (e) {
-      setState(() { _isLoading = false; });
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error saving audio: $e")));
+      setState(() {
+        _isLoading = false;
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text("Error saving audio: $e")));
     }
   }
 
+  Future<void> _addBookmark([int? targetIndex]) async {
+    int localIndex = targetIndex ?? _currentWordStart;
+    int globalIndex = (_currentPageIndex * 3000) + localIndex;
+    int endSnippet = localIndex + 50;
+    if (endSnippet > _currentPageContent.length)
+      endSnippet = _currentPageContent.length;
+    String snippet =
+        _currentPageContent
+            .substring(localIndex, endSnippet)
+            .replaceAll("\n", " ") +
+        "...";
+    await BookmarkService.addBookmark(
+      filePath: widget.filePath,
+      fileName: widget.fileName,
+      index: globalIndex,
+      snippet: snippet,
+    );
+    _refreshBookmarks();
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text("Bookmark Saved!")));
+  }
+
+  Future<void> _removeBookmark(int localIndex) async {
+    int globalIndex = (_currentPageIndex * 3000) + localIndex;
+    await BookmarkService.deleteBookmarkByPosition(
+      widget.filePath,
+      globalIndex,
+    );
+    _refreshBookmarks();
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text("Bookmark Removed")));
+  }
+
+  Future<void> _refreshBookmarks() async {
+    List<Map<String, dynamic>> fileBookmarks =
+        await BookmarkService.getBookmarksForFile(widget.filePath);
+    Set<int> indices = {};
+    int pageStart = _currentPageIndex * 3000;
+    int pageEnd = pageStart + _currentPageContent.length;
+    for (var b in fileBookmarks) {
+      int idx = b['index'] as int;
+      if (idx >= pageStart && idx < pageEnd) {
+        indices.add(idx - pageStart);
+      }
+    }
+    if (mounted) setState(() => _pageBookmarkIndices = indices);
+  }
+
   void _showVoicePicker() {
-    showModalBottomSheet(context: context, builder: (ctx) {
+    /* ... existing impl ... */
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) {
         return Container(
           padding: const EdgeInsets.all(16),
           child: Column(
             children: [
-              const Text("Select Voice", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-              Expanded(child: ListView.builder(itemCount: _voices.length, itemBuilder: (c, i) {
-                var voice = _voices[i];
-                var displayInfo = _getVoiceDisplayInfo(voice["name"]!, voice["locale"]!);
-                bool isSelected = _currentVoice == voice;
-                return ListTile(
-                  leading: Icon(displayInfo['icon'], color: Colors.grey),
-                  title: Text(displayInfo['title']),
-                  subtitle: Text(displayInfo['subtitle']), 
-                  trailing: isSelected ? const Icon(Icons.check_circle, color: Colors.deepPurple) : null,
-                  onTap: () { _setVoice(voice); Navigator.pop(ctx); }
-                );
-              }))
+              const Text(
+                "Select Voice",
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+              ),
+              Expanded(
+                child: ListView.builder(
+                  itemCount: _voices.length,
+                  itemBuilder: (c, i) {
+                    var voice = _voices[i];
+                    var displayInfo = _getVoiceDisplayInfo(
+                      voice["name"]!,
+                      voice["locale"]!,
+                    );
+                    bool isSelected = _currentVoice == voice;
+                    return ListTile(
+                      leading: Icon(displayInfo['icon'], color: Colors.grey),
+                      title: Text(displayInfo['title']),
+                      subtitle: Text(displayInfo['subtitle']),
+                      trailing: isSelected
+                          ? const Icon(
+                              Icons.check_circle,
+                              color: Colors.deepPurple,
+                            )
+                          : null,
+                      onTap: () {
+                        _setVoice(voice);
+                        Navigator.pop(ctx);
+                      },
+                    );
+                  },
+                ),
+              ),
             ],
           ),
         );
-    });
-  }
-
-  void _showLanguagePicker() {
-    showModalBottomSheet(context: context, builder: (ctx) {
-      return Container(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text("Translate To", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-            ListTile(title: const Text('English (Original)'), onTap: () { Navigator.pop(ctx); _changeLanguage('en'); }),
-            ListTile(title: const Text('Bemba (Zambia)'), onTap: () { Navigator.pop(ctx); _changeLanguage('bem'); }),
-            ListTile(title: const Text('Nyanja (Zambia)'), onTap: () { Navigator.pop(ctx); _changeLanguage('nya'); }),
-            ListTile(title: const Text('French'), onTap: () { Navigator.pop(ctx); _changeLanguage('fr'); }),
-            ListTile(title: const Text('Spanish'), onTap: () { Navigator.pop(ctx); _changeLanguage('es'); }),
-          ],
-        ),
-      );
-    });
+      },
+    );
   }
 
   void _showAudioSettings() {
-    showModalBottomSheet(context: context, builder: (ctx) {
-      return StatefulBuilder(builder: (c, setModalState) {
-        return Container(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text("Audio Settings", style: TextStyle(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 20),
-              Text("Speed: ${_speechRate.toStringAsFixed(1)}x"),
-              Slider(value: _speechRate, min: 0.1, max: 2.0, onChangeEnd: (v) { if (_isPlaying) { _pausePlayback(); Future.delayed(const Duration(milliseconds: 200), _playCurrentPage); } }, onChanged: (v) { setState(() => _speechRate = v); setModalState((){}); }),
-              Text("Pitch: ${_pitch.toStringAsFixed(1)}"),
-              Slider(value: _pitch, min: 0.5, max: 2.0, onChangeEnd: (v) { if (_isPlaying) { _pausePlayback(); Future.delayed(const Duration(milliseconds: 200), _playCurrentPage); } }, onChanged: (v) { setState(() => _pitch = v); setModalState((){}); }),
-            ],
-          ),
+    /* ... existing impl ... */
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (c, setModalState) {
+            return Container(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    "Audio Settings",
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 20),
+                  Text("Speed: ${_speechRate.toStringAsFixed(1)}x"),
+                  Slider(
+                    value: _speechRate,
+                    min: 0.1,
+                    max: 2.0,
+                    onChangeEnd: (v) {
+                      if (_isPlaying) {
+                        _pausePlayback();
+                        Future.delayed(
+                          const Duration(milliseconds: 200),
+                          _playCurrentPage,
+                        );
+                      }
+                    },
+                    onChanged: (v) {
+                      setState(() => _speechRate = v);
+                      setModalState(() {});
+                    },
+                  ),
+                  Text("Pitch: ${_pitch.toStringAsFixed(1)}"),
+                  Slider(
+                    value: _pitch,
+                    min: 0.5,
+                    max: 2.0,
+                    onChangeEnd: (v) {
+                      if (_isPlaying) {
+                        _pausePlayback();
+                        Future.delayed(
+                          const Duration(milliseconds: 200),
+                          _playCurrentPage,
+                        );
+                      }
+                    },
+                    onChanged: (v) {
+                      setState(() => _pitch = v);
+                      setModalState(() {});
+                    },
+                  ),
+                ],
+              ),
+            );
+          },
         );
-      });
-    });
+      },
+    );
   }
 
   void _showPageJumper() {
+    /* ... existing impl ... */
     TextEditingController pageController = TextEditingController();
-    showDialog(context: context, builder: (ctx) => AlertDialog(title: const Text("Jump to Page"), content: TextField(controller: pageController, keyboardType: TextInputType.number, decoration: const InputDecoration(hintText: "Enter page number")), actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancel")), ElevatedButton(onPressed: () { int? page = int.tryParse(pageController.text); if (page != null && page > 0 && page <= _pages.length) { Navigator.pop(ctx); _changePage(page - 1); } }, child: const Text("Go"))]));
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Jump to Page"),
+        content: TextField(
+          controller: pageController,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(hintText: "Enter page number"),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("Cancel"),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              int? page = int.tryParse(pageController.text);
+              if (page != null && page > 0 && page <= _pages.length) {
+                Navigator.pop(ctx);
+                _changePage(page - 1);
+              }
+            },
+            child: const Text("Go"),
+          ),
+        ],
+      ),
+    );
   }
 
   void _handleWordTap(String word, int startIndex) {
+    /* ... existing impl ... */
     if (_isPlaying) _pausePlayback();
     bool isBookmarked = _pageBookmarkIndices.contains(startIndex);
-
     showModalBottomSheet(
       context: context,
       builder: (ctx) {
@@ -556,11 +795,31 @@ class _ReaderScreenState extends State<ReaderScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(word, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.deepPurple)),
+              Text(
+                word,
+                style: const TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.deepPurple,
+                ),
+              ),
               const SizedBox(height: 20),
-              ListTile(leading: const Icon(Icons.play_circle_fill, color: Colors.deepPurple), title: const Text("Read from here"), onTap: () { Navigator.pop(ctx); _playFromIndex(startIndex); }),
               ListTile(
-                leading: Icon(isBookmarked ? Icons.bookmark_remove : Icons.bookmark_add, color: Colors.orange),
+                leading: const Icon(
+                  Icons.play_circle_fill,
+                  color: Colors.deepPurple,
+                ),
+                title: const Text("Read from here"),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _playFromIndex(startIndex);
+                },
+              ),
+              ListTile(
+                leading: Icon(
+                  isBookmarked ? Icons.bookmark_remove : Icons.bookmark_add,
+                  color: Colors.orange,
+                ),
                 title: Text(isBookmarked ? "Remove Bookmark" : "Bookmark this"),
                 onTap: () async {
                   if (isBookmarked) {
@@ -572,95 +831,189 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   }
                 },
               ),
-              ListTile(leading: const Icon(Icons.menu_book, color: Colors.blue), title: const Text("Look up definition"), onTap: () { Navigator.pop(ctx); _showDefinition(word); }),
+              ListTile(
+                leading: const Icon(Icons.menu_book, color: Colors.blue),
+                title: const Text("Look up definition"),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showDefinition(word);
+                },
+              ),
             ],
           ),
         );
-      }
+      },
     );
   }
-  
-  // --- ADDED MISSING METHOD ---
-  void _showDefinition(String word) async {
+
+  void _showDefinition(String word) {
+    /* ... existing impl ... */
     String cleanWord = word.replaceAll(RegExp(r'[^\w\s]'), '');
-    String? def = await DictionaryService.getDefinition(cleanWord);
-    showDialog(context: context, builder: (ctx) => AlertDialog(title: Text(cleanWord), content: Text(def ?? "Definition not found."), actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Close"))]));
+    // Using a FutureBuilder or sync call if dictionary service allows, assuming async call:
+    DictionaryService.getDefinition(cleanWord).then((def) {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text(cleanWord),
+          content: Text(def ?? "Definition not found."),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text("Close"),
+            ),
+          ],
+        ),
+      );
+    });
+  }
+
+  void _showBookmarkInfo(String snippet, int index) {
+    /* ... existing impl ... */
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Bookmark"),
+        content: Text(snippet),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _removeBookmark(index);
+            },
+            child: const Text("Delete", style: TextStyle(color: Colors.red)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("Close"),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.fileName, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        title: Text(widget.fileName, style: const TextStyle(fontSize: 14)),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.bookmark_add),
+            onPressed: _addBookmark,
+            tooltip: "Bookmark",
+          ),
+          IconButton(
+            icon: const Icon(Icons.save_alt),
+            onPressed: _saveToAudioFile,
+          ),
+          IconButton(
+            icon: const Icon(Icons.record_voice_over),
+            onPressed: _showVoicePicker,
+          ),
           PopupMenuButton<String>(
-            onSelected: (value) {
-              switch (value) {
-                case 'bookmark': _addBookmark(); break;
-                case 'save': _saveToAudioFile(); break;
-                case 'voice': _showVoicePicker(); break;
-                case 'translate': _showLanguagePicker(); break;
-                case 'settings': _showAudioSettings(); break;
-              }
-            },
-            itemBuilder: (BuildContext context) {
-              return [
-                const PopupMenuItem(
-                  value: 'bookmark',
-                  child: Row(children: [Icon(Icons.bookmark_add, color: Colors.grey), SizedBox(width: 10), Text('Bookmark Page')]),
-                ),
-                const PopupMenuItem(
-                  value: 'save',
-                  child: Row(children: [Icon(Icons.save_alt, color: Colors.grey), SizedBox(width: 10), Text('Save Audio')]),
-                ),
-                const PopupMenuItem(
-                  value: 'voice',
-                  child: Row(children: [Icon(Icons.record_voice_over, color: Colors.grey), SizedBox(width: 10), Text('Select Voice')]),
-                ),
-                const PopupMenuItem(
-                  value: 'translate',
-                  child: Row(children: [Icon(Icons.translate, color: Colors.grey), SizedBox(width: 10), Text('Translate')]),
-                ),
-                const PopupMenuItem(
-                  value: 'settings',
-                  child: Row(children: [Icon(Icons.tune, color: Colors.grey), SizedBox(width: 10), Text('Audio Settings')]),
-                ),
-              ];
-            },
+            icon: const Icon(Icons.translate),
+            onSelected: _changeLanguage,
+            itemBuilder: (context) => [
+              const PopupMenuDivider(height: 20),
+              const PopupMenuItem(value: 'en', child: Text('English')),
+              const PopupMenuItem(value: 'bem', child: Text('Bemba')),
+              const PopupMenuItem(value: 'nya', child: Text('Nyanja')),
+              const PopupMenuItem(value: 'fr', child: Text('French')),
+              const PopupMenuItem(value: 'es', child: Text('Spanish')),
+            ],
+          ),
+          IconButton(
+            icon: const Icon(Icons.tune),
+            onPressed: _showAudioSettings,
           ),
         ],
       ),
       body: Column(
         children: [
           Expanded(
-            child: _isLoading 
-              ? Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [const CircularProgressIndicator(), const SizedBox(height: 20), Text(_loadingMessage, textAlign: TextAlign.center)]))
-              : Padding(padding: const EdgeInsets.all(16.0), child: SingleChildScrollView(controller: _scrollController, child: _buildInteractiveText())),
+            child: _isLoading
+                ? Center(child: const CircularProgressIndicator())
+                : Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: SingleChildScrollView(
+                      controller: _scrollController,
+                      child: _buildInteractiveText(),
+                    ),
+                  ),
           ),
+          // Pagination Controls
           if (!_isLoading && _pages.isNotEmpty)
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  IconButton(icon: const Icon(Icons.arrow_back_ios), onPressed: _currentPageIndex > 0 ? () => _changePage(_currentPageIndex - 1) : null),
-                  InkWell(onTap: _showPageJumper, child: Padding(padding: const EdgeInsets.all(8.0), child: Text("Page ${_currentPageIndex + 1} of ${_pages.length}", style: const TextStyle(fontWeight: FontWeight.bold, decoration: TextDecoration.underline)))),
-                  IconButton(icon: const Icon(Icons.arrow_forward_ios), onPressed: _currentPageIndex < _pages.length - 1 ? () => _changePage(_currentPageIndex + 1) : null),
+                  IconButton(
+                    icon: const Icon(Icons.arrow_back_ios),
+                    onPressed: _currentPageIndex > 0
+                        ? () => _changePage(_currentPageIndex - 1)
+                        : null,
+                  ),
+                  InkWell(
+                    onTap: _showPageJumper,
+                    child: Padding(
+                      padding: const EdgeInsets.all(8.0),
+                      child: Text(
+                        "Page ${_currentPageIndex + 1} / ${_pages.length}",
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          decoration: TextDecoration.underline,
+                        ),
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.arrow_forward_ios),
+                    onPressed: _currentPageIndex < _pages.length - 1
+                        ? () => _changePage(_currentPageIndex + 1)
+                        : null,
+                  ),
                 ],
               ),
             ),
         ],
       ),
-      floatingActionButton: _isLoading 
-          ? null 
+      // --- NEW: PLAYER CONTROLS (Stop, Rewind, Play, Forward) ---
+      floatingActionButton: _isLoading
+          ? null
           : Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                FloatingActionButton.small(heroTag: "rewind", onPressed: _skipBackward, child: const Icon(Icons.replay_10)),
+                // Stop Button
+                FloatingActionButton.small(
+                  heroTag: "stop",
+                  backgroundColor: Colors.red.shade100,
+                  foregroundColor: Colors.red,
+                  onPressed: _stopPlayback,
+                  child: const Icon(Icons.stop),
+                ),
                 const SizedBox(width: 16),
-                FloatingActionButton.extended(heroTag: "play", onPressed: _togglePlay, icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow), label: Text(_isPlaying ? "Pause" : "Play")),
+                // Rewind
+                FloatingActionButton.small(
+                  heroTag: "rewind",
+                  onPressed: _skipBackward,
+                  child: const Icon(Icons.replay_10),
+                ),
                 const SizedBox(width: 16),
-                FloatingActionButton.small(heroTag: "forward", onPressed: _skipForward, child: const Icon(Icons.forward_10)),
+                // Play/Pause
+                FloatingActionButton.extended(
+                  heroTag: "play",
+                  onPressed: _togglePlay,
+                  icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow),
+                  label: Text(_isPlaying ? "Pause" : "Play"),
+                ),
+                const SizedBox(width: 16),
+                // Forward
+                FloatingActionButton.small(
+                  heroTag: "forward",
+                  onPressed: _skipForward,
+                  child: const Icon(Icons.forward_10),
+                ),
               ],
             ),
       floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
@@ -675,43 +1028,59 @@ class _ReaderScreenState extends State<ReaderScreen> {
     for (String word in rawWords) {
       final int wordStart = currentIndex;
       final int wordEnd = currentIndex + word.length;
-      bool isHighlighted = _currentWordStart >= wordStart && _currentWordStart < wordEnd;
+      bool isHighlighted =
+          _currentWordStart >= wordStart && _currentWordStart < wordEnd;
       bool isBookmarked = _pageBookmarkIndices.contains(wordStart);
 
       if (isBookmarked) {
-        spans.add(WidgetSpan(
-          alignment: PlaceholderAlignment.middle,
-          child: GestureDetector(
-            onTap: () {
-               String snippet = _currentPageContent.substring(wordStart, (wordStart + 50 < _currentPageContent.length) ? wordStart + 50 : _currentPageContent.length);
-               _showBookmarkInfo(snippet + "...", wordStart); 
-            },
-            onDoubleTap: () {
-               _removeBookmark(wordStart);
-            },
-            child: const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 2.0),
-              child: Text("🔖", style: TextStyle(fontSize: 16)),
+        spans.add(
+          WidgetSpan(
+            alignment: PlaceholderAlignment.middle,
+            child: GestureDetector(
+              onTap: () {
+                String snippet = _currentPageContent.substring(
+                  wordStart,
+                  (wordStart + 50 < _currentPageContent.length)
+                      ? wordStart + 50
+                      : _currentPageContent.length,
+                );
+                _showBookmarkInfo(snippet + "...", wordStart);
+              },
+              onDoubleTap: () {
+                _removeBookmark(wordStart);
+              },
+              child: const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 2.0),
+                child: Text("🔖", style: TextStyle(fontSize: 16)),
+              ),
             ),
           ),
-        ));
+        );
       }
 
-      spans.add(TextSpan(
-        text: "$word ", 
-        style: TextStyle(
-          fontSize: 18, 
-          height: 1.6, 
-          decoration: isBookmarked ? TextDecoration.underline : null,
-          decorationColor: Colors.orange,
-          color: Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black87,
-          backgroundColor: isHighlighted ? Colors.yellow : null,
-          fontWeight: isHighlighted ? FontWeight.bold : FontWeight.normal
+      spans.add(
+        TextSpan(
+          text: "$word ",
+          style: TextStyle(
+            fontSize: 18,
+            height: 1.6,
+            decoration: isBookmarked ? TextDecoration.underline : null,
+            decorationColor: Colors.orange,
+            color: Theme.of(context).brightness == Brightness.dark
+                ? Colors.white
+                : Colors.black87,
+            backgroundColor: isHighlighted ? Colors.yellow : null,
+            fontWeight: isHighlighted ? FontWeight.bold : FontWeight.normal,
+          ),
+          recognizer: TapGestureRecognizer()
+            ..onTap = () => _handleWordTap(word.trim(), wordStart),
         ),
-        recognizer: TapGestureRecognizer()..onTap = () => _handleWordTap(word.trim(), wordStart),
-      ));
-      currentIndex += word.length + 1; 
+      );
+      currentIndex += word.length + 1;
     }
-    return RichText(textAlign: TextAlign.justify, text: TextSpan(children: spans));
+    return RichText(
+      textAlign: TextAlign.justify,
+      text: TextSpan(children: spans),
+    );
   }
 }

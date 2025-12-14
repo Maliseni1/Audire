@@ -1,51 +1,45 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart'; // Required for debugPrint
 import 'package:permission_handler/permission_handler.dart';
 
 class FileScanner {
-  // Target folders to scan
   static final List<String> _targetFolders = [
     '/storage/emulated/0/Download',
     '/storage/emulated/0/Documents',
     '/storage/emulated/0/Books',
-    '/storage/emulated/0/DCIM/Camera', // Added to find photos for OCR
-    '/storage/emulated/0/Pictures',    // Added standard Pictures folder
+    '/storage/emulated/0/DCIM/Camera',
+    '/storage/emulated/0/Pictures',
   ];
 
-  // Updated list of allowed file types
   static final List<String> _allowedExtensions = [
-    '.pdf', 
-    '.txt', 
-    '.docx', // Word Documents
-    '.jpg',  // Images
-    '.jpeg', // Images
-    '.png'   // Images
+    '.pdf',
+    '.txt',
+    '.docx',
+    '.jpg',
+    '.jpeg',
+    '.png',
   ];
 
-  /// Scans the device for compatible files
   static Future<List<FileSystemEntity>> scanDeviceForFiles() async {
     List<FileSystemEntity> foundFiles = [];
 
-    // 1. CHECK PERMISSIONS
-    // Android 11+ (SDK 30+) requires MANAGE_EXTERNAL_STORAGE
     if (await Permission.manageExternalStorage.request().isGranted) {
-      // Permission granted for Android 11+
-    } 
-    // Older Android versions use standard storage permission
-    else if (await Permission.storage.request().isGranted) {
-      // Permission granted for older Android
+      // Android 11+
+    } else if (await Permission.storage.request().isGranted) {
+      // Older Android
     } else {
-      // Permission denied
       return [];
     }
 
-    // 2. SCAN FOLDERS
     for (String path in _targetFolders) {
       final dir = Directory(path);
-      
+
       if (await dir.exists()) {
         try {
-          // Recursive scan: checks folders inside folders
-          await for (var entity in dir.list(recursive: true, followLinks: false)) {
+          await for (var entity in dir.list(
+            recursive: true,
+            followLinks: false,
+          )) {
             if (entity is File) {
               if (_isAllowed(entity.path)) {
                 foundFiles.add(entity);
@@ -53,13 +47,11 @@ class FileScanner {
             }
           }
         } catch (e) {
-          // Some system folders might be locked, we skip them silently
-          print("Skipping access to $path: $e");
+          debugPrint("Skipping access to $path: $e");
         }
       }
     }
-    
-    // Sort files by date modified (newest first) for better UX
+
     try {
       foundFiles.sort((a, b) {
         return b.statSync().modified.compareTo(a.statSync().modified);
@@ -67,11 +59,10 @@ class FileScanner {
     } catch (e) {
       // Ignore sort errors
     }
-    
+
     return foundFiles;
   }
 
-  // Helper to check file extensions
   static bool _isAllowed(String path) {
     String lowerPath = path.toLowerCase();
     for (var ext in _allowedExtensions) {

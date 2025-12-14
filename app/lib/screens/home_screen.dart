@@ -1,18 +1,17 @@
 import 'dart:io';
-import 'dart:async';
+import 'dart:async'; // Required for Timer
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart'; // Required for SystemNavigator (Exit App)
 import 'package:file_picker/file_picker.dart';
-import 'package:image_picker/image_picker.dart'; 
+import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
-import 'package:path_provider/path_provider.dart';
-import '../services/file_scanner.dart'; 
-import '../services/audio_manager.dart';
+import '../services/file_scanner.dart';
+import '../services/audio_manager.dart'; // Import for globalAudioHandler
 import 'reader_screen.dart';
-import 'dictionary_screen.dart'; 
-import 'settings_screen.dart'; 
-import 'history_screen.dart'; 
-import 'bookmarks_screen.dart'; 
+import 'dictionary_screen.dart';
+import 'settings_screen.dart';
+import 'history_screen.dart';
+import 'bookmarks_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -27,8 +26,9 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isLoading = true;
   final TextEditingController _searchController = TextEditingController();
   final ImagePicker _picker = ImagePicker();
-  String _selectedCategory = 'All'; 
-  
+  String _selectedCategory = 'All';
+
+  // Sleep Timer State
   Timer? _sleepTimer;
 
   @override
@@ -49,7 +49,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) {
       setState(() {
         _allFiles = files;
-        _applyFilters(); 
+        _applyFilters();
         _isLoading = false;
       });
     }
@@ -62,19 +62,25 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_selectedCategory == 'Documents') {
       temp = temp.where((f) {
         String path = f.path.toLowerCase();
-        return path.endsWith('.pdf') || path.endsWith('.docx') || path.endsWith('.txt');
+        return path.endsWith('.pdf') ||
+            path.endsWith('.docx') ||
+            path.endsWith('.txt');
       }).toList();
     } else if (_selectedCategory == 'Photos') {
       temp = temp.where((f) {
         String path = f.path.toLowerCase();
-        return path.endsWith('.jpg') || path.endsWith('.png') || path.endsWith('.jpeg');
+        return path.endsWith('.jpg') ||
+            path.endsWith('.png') ||
+            path.endsWith('.jpeg');
       }).toList();
     }
 
     if (keyword.isNotEmpty) {
-      temp = temp.where((file) => 
-        file.path.split('/').last.toLowerCase().contains(keyword)
-      ).toList();
+      temp = temp
+          .where(
+            (file) => file.path.split('/').last.toLowerCase().contains(keyword),
+          )
+          .toList();
     }
 
     setState(() {
@@ -94,125 +100,57 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // --- MULTI-PAGE SCANNING LOGIC ---
   Future<void> _scanDocument() async {
     var status = await Permission.camera.status;
     if (!status.isGranted) status = await Permission.camera.request();
 
-    if (status.isDenied || status.isPermanentlyDenied) {
-       _showPermissionDialog();
-       return;
-    }
-
-    List<String> scannedPages = [];
-    bool scanning = true;
-    int pageCount = 0;
-
-    while (scanning) {
-      try {
-        final XFile? photo = await _picker.pickImage(
-          source: ImageSource.camera,
-          imageQuality: 85, 
+    if (status.isDenied) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Camera permission is required.")),
         );
-
-        if (photo == null) {
-          scanning = false; 
-          break;
-        }
-
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text("Processing Page ${pageCount + 1}..."))
-          );
-        }
-
-        final inputImage = InputImage.fromFilePath(photo.path);
-        final textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
-        final RecognizedText recognizedText = await textRecognizer.processImage(inputImage);
-        await textRecognizer.close();
-
-        String pageText = recognizedText.text.trim();
-        if (pageText.isNotEmpty) {
-          scannedPages.add(pageText);
-          pageCount++;
-        } else {
-          if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("No text detected on this page.")));
-        }
-
-        if (mounted) {
-          bool? addMore = await showDialog<bool>(
-            context: context,
-            barrierDismissible: false,
-            builder: (ctx) => AlertDialog(
-              title: Text("Page $pageCount Scanned"),
-              content: const Text("Would you like to scan another page?"),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(ctx, false), 
-                  child: const Text("Finish & Read", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
-                ),
-                ElevatedButton.icon(
-                  onPressed: () => Navigator.pop(ctx, true), 
-                  icon: const Icon(Icons.add_a_photo),
-                  label: const Text("Add Page"),
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple, foregroundColor: Colors.white),
-                ),
-              ],
-            ),
-          );
-
-          if (addMore != true) {
-            scanning = false;
-          }
-        }
-      } catch (e) {
-        scanning = false;
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Scan Error: $e")));
-      }
+      return;
     }
 
-    if (scannedPages.isNotEmpty) {
-      await _saveAndOpenScannedDoc(scannedPages);
-    }
-  }
-
-  Future<void> _saveAndOpenScannedDoc(List<String> pages) async {
-    try {
-      StringBuffer buffer = StringBuffer();
-      for (int i = 0; i < pages.length; i++) {
-        buffer.writeln("--- Page ${i + 1} ---");
-        buffer.writeln(pages[i]);
-        buffer.writeln("\n");
-      }
-
-      final directory = await getApplicationDocumentsDirectory();
-      String fileName = "Scanned_Doc_${DateTime.now().millisecondsSinceEpoch}.txt";
-      File file = File('${directory.path}/$fileName');
-      
-      await file.writeAsString(buffer.toString());
-
-      _scanFiles();
-
+    if (status.isPermanentlyDenied) {
       if (mounted) {
-        _openReader(file.path, "Scanned Document (${pages.length} Pages)");
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text("Permission Required"),
+            content: const Text(
+              "Camera access is permanently denied. Please enable it in Settings.",
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text("Cancel"),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  openAppSettings();
+                },
+                child: const Text("Settings"),
+              ),
+            ],
+          ),
+        );
+      }
+      return;
+    }
+
+    try {
+      final XFile? photo = await _picker.pickImage(source: ImageSource.camera);
+      if (photo != null) {
+        _openReader(photo.path, "Scanned Document");
       }
     } catch (e) {
-      print("Error saving scanned doc: $e");
+      if (mounted)
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text("Error: $e")));
     }
-  }
-
-  void _showPermissionDialog() {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text("Permission Required"),
-        content: const Text("Camera access is needed to scan documents. Please enable it in Settings."),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancel")),
-          ElevatedButton(onPressed: () { Navigator.pop(ctx); openAppSettings(); }, child: const Text("Settings")),
-        ],
-      )
-    );
   }
 
   void _openReader(String path, String name) {
@@ -224,10 +162,23 @@ class _HomeScreenState extends State<HomeScreen> {
     ).then((_) {});
   }
 
+  // --- NEW: EXIT APP FUNCTION ---
+  Future<void> _exitApp() async {
+    // 1. Stop any playing audio via the global handler
+    if (globalAudioHandler != null) {
+      await globalAudioHandler!.stop();
+    }
+    // 2. Kill App
+    SystemNavigator.pop();
+  }
+
+  // --- SLEEP TIMER DIALOG ---
   void _showSleepTimerDialog() {
     showModalBottomSheet(
       context: context,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
       builder: (ctx) {
         return Container(
           padding: const EdgeInsets.all(20),
@@ -237,97 +188,108 @@ class _HomeScreenState extends State<HomeScreen> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text("Set Sleep Timer", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.deepPurple)),
+                  const Text(
+                    "Set Sleep Timer",
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.deepPurple,
+                    ),
+                  ),
                   if (_sleepTimer != null && _sleepTimer!.isActive)
                     TextButton(
                       onPressed: () {
                         _sleepTimer?.cancel();
                         Navigator.pop(ctx);
-                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Timer Cancelled")));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text("Timer Cancelled")),
+                        );
                       },
-                      child: const Text("Cancel", style: TextStyle(color: Colors.red)),
-                    )
+                      child: const Text(
+                        "Cancel",
+                        style: TextStyle(color: Colors.red),
+                      ),
+                    ),
                 ],
               ),
               const SizedBox(height: 10),
-              ListTile(leading: const Icon(Icons.timer_10), title: const Text("10 Minutes"), onTap: () => _setTimer(10, ctx)),
-              ListTile(leading: const Icon(Icons.timer), title: const Text("20 Minutes"), onTap: () => _setTimer(20, ctx)),
-              ListTile(leading: const Icon(Icons.timelapse), title: const Text("30 Minutes"), onTap: () => _setTimer(30, ctx)),
-              ListTile(leading: const Icon(Icons.hourglass_bottom), title: const Text("45 Minutes"), onTap: () => _setTimer(45, ctx)),
-              ListTile(leading: const Icon(Icons.bedtime), title: const Text("60 Minutes"), onTap: () => _setTimer(60, ctx)),
+              ListTile(
+                leading: const Icon(Icons.timer_10),
+                title: const Text("10 Minutes"),
+                onTap: () => _setTimer(10, ctx),
+              ),
+              ListTile(
+                leading: const Icon(Icons.timer),
+                title: const Text("20 Minutes"),
+                onTap: () => _setTimer(20, ctx),
+              ),
+              ListTile(
+                leading: const Icon(Icons.timelapse),
+                title: const Text("30 Minutes"),
+                onTap: () => _setTimer(30, ctx),
+              ),
+              ListTile(
+                leading: const Icon(Icons.hourglass_bottom),
+                title: const Text("45 Minutes"),
+                onTap: () => _setTimer(45, ctx),
+              ),
+              ListTile(
+                leading: const Icon(Icons.bedtime),
+                title: const Text("60 Minutes"),
+                onTap: () => _setTimer(60, ctx),
+              ),
             ],
           ),
         );
-      }
+      },
     );
   }
 
   void _setTimer(int minutes, BuildContext ctx) {
-    _sleepTimer?.cancel(); 
+    _sleepTimer?.cancel();
     Navigator.pop(ctx);
-    
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Audio will stop in $minutes minutes")));
-    
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text("Audio will stop in $minutes minutes")),
+    );
+
     _sleepTimer = Timer(Duration(minutes: minutes), () {
       if (globalAudioHandler != null) {
         globalAudioHandler!.pause();
         globalAudioHandler!.stop();
       }
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Sleep Timer: Audio Paused")));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Sleep Timer: Audio Paused")),
+        );
       }
     });
   }
 
-  // --- UPDATED ABOUT DIALOG FOR v2.0.0 ---
   void _showAboutDialog() {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Row(
-          children: [
-            Icon(Icons.audio_file, color: Colors.deepPurple, size: 30),
-            SizedBox(width: 10),
-            Text("AUDIRE", style: TextStyle(fontWeight: FontWeight.bold)),
-          ],
-        ),
-        content: const SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text("Version 2.0.0", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-              SizedBox(height: 5),
-              Text("The Ultimate Offline Audio Reader."),
-              SizedBox(height: 15),
-              Text("What's New in v2.0:", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.deepPurple)),
-              SizedBox(height: 5),
-              Text("• Camera Scanning (OCR)"),
-              Text("• Interactive Bookmarking"),
-              Text("• Smart Sleep Timer"),
-              Text("• Offline Translation"),
-              Text("• Background Audio Player"),
-              SizedBox(height: 20),
-              Divider(),
-              SizedBox(height: 10),
-              Text("Developed by", style: TextStyle(fontSize: 12, color: Colors.grey)),
-              Text("Chiza Labs", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-              Text("© 2025 All Rights Reserved", style: TextStyle(fontSize: 12, color: Colors.grey)),
-            ],
-          ),
+        title: const Text("AUDIRE"),
+        content: const Text(
+          "Version 2.0.0\nBuilt by Chiza Labs.\n\nThe Ultimate Offline Audio Reader.",
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text("Close", style: TextStyle(color: Colors.deepPurple)),
+            child: const Text("Close"),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildQuickAction(IconData icon, String label, Color color, VoidCallback onTap) {
+  Widget _buildQuickAction(
+    IconData icon,
+    String label,
+    Color color,
+    VoidCallback onTap,
+  ) {
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(15),
@@ -342,7 +304,14 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             Icon(icon, size: 32, color: color),
             const SizedBox(height: 8),
-            Text(label, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 12)),
+            Text(
+              label,
+              style: TextStyle(
+                color: color,
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+              ),
+            ),
           ],
         ),
       ),
@@ -367,12 +336,14 @@ class _HomeScreenState extends State<HomeScreen> {
         selectedColor: Colors.deepPurple,
         labelStyle: TextStyle(
           color: isSelected ? Colors.white : Colors.deepPurple,
-          fontWeight: FontWeight.bold
+          fontWeight: FontWeight.bold,
         ),
         backgroundColor: Colors.deepPurple.shade50,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(20),
-          side: BorderSide(color: isSelected ? Colors.deepPurple : Colors.deepPurple.shade100),
+          side: BorderSide(
+            color: isSelected ? Colors.deepPurple : Colors.deepPurple.shade100,
+          ),
         ),
       ),
     );
@@ -381,15 +352,18 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     bool isDark = Theme.of(context).brightness == Brightness.dark;
-    
+
     return Scaffold(
       appBar: AppBar(
         title: const Text("Audire Home"),
         elevation: 0,
         actions: [
           IconButton(
-            icon: const Icon(Icons.settings), 
-            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const SettingsScreen()))
+            icon: const Icon(Icons.settings),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const SettingsScreen()),
+            ),
           ),
         ],
       ),
@@ -402,33 +376,69 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(height: 10),
             TextField(
               controller: _searchController,
-              onChanged: (val) => _applyFilters(), 
+              onChanged: (val) => _applyFilters(),
               decoration: InputDecoration(
                 hintText: 'Search your library...',
                 prefixIcon: const Icon(Icons.search),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(15), borderSide: BorderSide.none),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(15),
+                  borderSide: BorderSide.none,
+                ),
                 filled: true,
                 fillColor: isDark ? Colors.grey[800] : Colors.grey[200],
                 contentPadding: const EdgeInsets.symmetric(vertical: 0),
               ),
             ),
-            
+
             const SizedBox(height: 20),
-            const Text("Quick Actions", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const Text(
+              "Quick Actions",
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
             const SizedBox(height: 10),
-            
+
             GridView.count(
-              crossAxisCount: 2, 
-              shrinkWrap: true, 
-              physics: const NeverScrollableScrollPhysics(), 
+              crossAxisCount: 2,
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
               mainAxisSpacing: 10,
               crossAxisSpacing: 10,
-              childAspectRatio: 2.5, 
+              childAspectRatio: 2.5,
               children: [
-                _buildQuickAction(Icons.camera_alt, "Scan Doc", Colors.orange, _scanDocument),
-                _buildQuickAction(Icons.upload_file, "Import File", Colors.blue, _pickFile),
-                _buildQuickAction(Icons.menu_book, "Dictionary", Colors.purple, () => Navigator.push(context, MaterialPageRoute(builder: (context) => const DictionaryScreen()))),
-                _buildQuickAction(Icons.history, "History", Colors.green, () => Navigator.push(context, MaterialPageRoute(builder: (context) => const HistoryScreen()))),
+                _buildQuickAction(
+                  Icons.camera_alt,
+                  "Scan Doc",
+                  Colors.orange,
+                  _scanDocument,
+                ),
+                _buildQuickAction(
+                  Icons.upload_file,
+                  "Import File",
+                  Colors.blue,
+                  _pickFile,
+                ),
+                _buildQuickAction(
+                  Icons.menu_book,
+                  "Dictionary",
+                  Colors.purple,
+                  () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const DictionaryScreen(),
+                    ),
+                  ),
+                ),
+                _buildQuickAction(
+                  Icons.history,
+                  "History",
+                  Colors.green,
+                  () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const HistoryScreen(),
+                    ),
+                  ),
+                ),
               ],
             ),
 
@@ -436,8 +446,14 @@ class _HomeScreenState extends State<HomeScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text("Your Library", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                IconButton(icon: const Icon(Icons.refresh, size: 20), onPressed: _scanFiles),
+                const Text(
+                  "Your Library",
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.refresh, size: 20),
+                  onPressed: _scanFiles,
+                ),
               ],
             ),
 
@@ -452,44 +468,74 @@ class _HomeScreenState extends State<HomeScreen> {
                 ],
               ),
             ),
-            
+
             Expanded(
               child: _isLoading
                   ? const Center(child: CircularProgressIndicator())
                   : _filteredFiles.isEmpty
-                      ? const Center(child: Text("No files found. Scan or Import one!"))
-                      : ListView.builder(
-                          itemCount: _filteredFiles.length,
-                          padding: const EdgeInsets.only(bottom: 20),
-                          itemBuilder: (context, index) {
-                            File file = _filteredFiles[index] as File;
-                            String name = file.path.split('/').last;
-                            String ext = name.split('.').last.toUpperCase();
-                            
-                            IconData icon = Icons.insert_drive_file;
-                            Color iconColor = Colors.grey;
-                            if (ext == 'PDF') { icon = Icons.picture_as_pdf; iconColor = Colors.red; }
-                            else if (ext == 'DOCX') { icon = Icons.description; iconColor = Colors.blue; }
-                            else if (['JPG', 'PNG', 'JPEG'].contains(ext)) { icon = Icons.image; iconColor = Colors.purple; }
+                  ? const Center(
+                      child: Text("No files found. Scan or Import one!"),
+                    )
+                  : ListView.builder(
+                      itemCount: _filteredFiles.length,
+                      padding: const EdgeInsets.only(bottom: 20),
+                      itemBuilder: (context, index) {
+                        File file = _filteredFiles[index] as File;
+                        String name = file.path.split('/').last;
+                        String ext = name.split('.').last.toUpperCase();
 
-                            return Card(
-                              margin: const EdgeInsets.only(bottom: 8),
-                              elevation: 0,
-                              color: isDark ? Colors.grey[900] : Colors.white,
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10), side: BorderSide(color: Colors.grey.withOpacity(0.2))),
-                              child: ListTile(
-                                leading: Container(
-                                  padding: const EdgeInsets.all(8),
-                                  decoration: BoxDecoration(color: iconColor.withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
-                                  child: Icon(icon, color: iconColor),
-                                ),
-                                title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w500)),
-                                subtitle: Text(ext, style: const TextStyle(fontSize: 10, color: Colors.grey)),
-                                onTap: () => _openReader(file.path, name),
+                        IconData icon = Icons.insert_drive_file;
+                        Color iconColor = Colors.grey;
+                        if (ext == 'PDF') {
+                          icon = Icons.picture_as_pdf;
+                          iconColor = Colors.red;
+                        } else if (ext == 'DOCX') {
+                          icon = Icons.description;
+                          iconColor = Colors.blue;
+                        } else if (['JPG', 'PNG', 'JPEG'].contains(ext)) {
+                          icon = Icons.image;
+                          iconColor = Colors.purple;
+                        }
+
+                        return Card(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          elevation: 0,
+                          color: isDark ? Colors.grey[900] : Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                            side: BorderSide(
+                              color: Colors.grey.withOpacity(0.2),
+                            ),
+                          ),
+                          child: ListTile(
+                            leading: Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: iconColor.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(8),
                               ),
-                            );
-                          },
-                        ),
+                              child: Icon(icon, color: iconColor),
+                            ),
+                            title: Text(
+                              name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                            subtitle: Text(
+                              ext,
+                              style: const TextStyle(
+                                fontSize: 10,
+                                color: Colors.grey,
+                              ),
+                            ),
+                            onTap: () => _openReader(file.path, name),
+                          ),
+                        );
+                      },
+                    ),
             ),
           ],
         ),
@@ -508,57 +554,113 @@ class _HomeScreenState extends State<HomeScreen> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Icon(Icons.audio_file, color: Colors.white, size: 50),
-                  Text("AUDIRE", style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
+                  Text(
+                    "AUDIRE",
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ],
               ),
             ),
           ),
-          ListTile(leading: const Icon(Icons.library_books), title: const Text('My Library'), onTap: () => Navigator.pop(context)),
-          ListTile(leading: const Icon(Icons.history), title: const Text('History'), onTap: () { Navigator.pop(context); Navigator.push(context, MaterialPageRoute(builder: (context) => const HistoryScreen())); }),
-          
           ListTile(
-            leading: const Icon(Icons.bookmarks), 
-            title: const Text('Bookmarks'), 
-            onTap: () { 
-              Navigator.pop(context); 
-              Navigator.push(context, MaterialPageRoute(builder: (context) => const BookmarksScreen())); 
-            }
+            leading: const Icon(Icons.library_books),
+            title: const Text('My Library'),
+            onTap: () => Navigator.pop(context),
+          ),
+          ListTile(
+            leading: const Icon(Icons.history),
+            title: const Text('History'),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const HistoryScreen()),
+              );
+            },
           ),
 
-          ListTile(leading: const Icon(Icons.menu_book), title: const Text('Offline Dictionary'), onTap: () { Navigator.pop(context); Navigator.push(context, MaterialPageRoute(builder: (context) => const DictionaryScreen())); }),
-          
+          ListTile(
+            leading: const Icon(Icons.bookmarks),
+            title: const Text('Bookmarks'),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const BookmarksScreen(),
+                ),
+              );
+            },
+          ),
+
+          ListTile(
+            leading: const Icon(Icons.menu_book),
+            title: const Text('Offline Dictionary'),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const DictionaryScreen(),
+                ),
+              );
+            },
+          ),
+
           const Divider(),
-          
+
           ListTile(
-            leading: const Icon(Icons.timer), 
-            title: const Text('Sleep Timer'), 
-            onTap: () { 
-              Navigator.pop(context); 
-              _showSleepTimerDialog(); 
-            }
+            leading: const Icon(Icons.timer),
+            title: const Text('Sleep Timer'),
+            onTap: () {
+              Navigator.pop(context);
+              _showSleepTimerDialog();
+            },
           ),
 
           ListTile(
-            leading: const Icon(Icons.settings), 
-            title: const Text('Settings'), 
-            onTap: () { 
-              Navigator.pop(context); 
-              Navigator.push(context, MaterialPageRoute(builder: (context) => const SettingsScreen())); 
-            }
+            leading: const Icon(Icons.settings),
+            title: const Text('Settings'),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const SettingsScreen()),
+              );
+            },
           ),
           ListTile(
-            leading: const Icon(Icons.info_outline), 
-            title: const Text('About'), 
-            onTap: () { 
-              Navigator.pop(context); 
-              _showAboutDialog(); 
-            }
+            leading: const Icon(Icons.info_outline),
+            title: const Text('About'),
+            onTap: () {
+              Navigator.pop(context);
+              _showAboutDialog();
+            },
           ),
-          
+
+          const Divider(),
+
+          // --- NEW: EXIT BUTTON ---
+          ListTile(
+            leading: const Icon(Icons.exit_to_app, color: Colors.red),
+            title: const Text(
+              'Exit App',
+              style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
+            ),
+            onTap: _exitApp,
+          ),
+
           const Spacer(),
           const Padding(
             padding: EdgeInsets.all(20.0),
-            child: Text("v2.0.0 • Chiza Labs", style: TextStyle(color: Colors.grey)),
+            child: Text(
+              "v2.1.0 • Chiza Labs",
+              style: TextStyle(color: Colors.grey),
+            ),
           ),
         ],
       ),
