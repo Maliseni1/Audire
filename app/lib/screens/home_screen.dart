@@ -14,7 +14,7 @@ import 'settings_screen.dart';
 import 'history_screen.dart';
 import 'bookmarks_screen.dart';
 import 'stats_screen.dart';
-import 'library_screen.dart'; // Import for View All
+import 'library_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -24,13 +24,14 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  // We keep a small preview list here
-  List<FileSystemEntity> _recentFiles = [];
+  List<FileSystemEntity> _allFiles = [];
+  List<FileSystemEntity> _filteredFiles = [];
   bool _isLoading = true;
   bool _hasPermission = false;
 
   final TextEditingController _searchController = TextEditingController();
   final ImagePicker _picker = ImagePicker();
+  String _selectedCategory = 'All';
 
   Timer? _sleepTimer;
   Map<String, dynamic>? _dailyWord;
@@ -38,8 +39,8 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    _scanFiles();
     _loadDailyWord();
-    // Check Permissions quietly first. If granted, scan. If not, wait for user action in UI.
     _checkPermissionAndScan(silent: true);
   }
 
@@ -50,50 +51,31 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _checkPermissionAndScan({bool silent = false}) async {
-    // Check status of storage permissions
-    // Android 11+ uses ManageExternalStorage, older uses Storage
-    bool granted = false;
-    if (await Permission.manageExternalStorage.isGranted) {
-      granted = true;
-    } else if (await Permission.storage.isGranted) {
-      granted = true;
-    }
-
+    bool granted =
+        await Permission.manageExternalStorage.isGranted ||
+        await Permission.storage.isGranted;
     if (granted) {
       if (mounted) setState(() => _hasPermission = true);
       _scanFiles();
     } else {
       if (mounted) setState(() => _hasPermission = false);
-      if (!silent) {
-        // If not silent (user clicked button), request them
-        await _requestPermissions();
-      }
+      if (!silent) await _requestPermissions();
     }
   }
 
   Future<void> _requestPermissions() async {
-    // Try requesting appropriate permission
-    if (await Permission.manageExternalStorage.request().isGranted) {
-      setState(() => _hasPermission = true);
-      _scanFiles();
-    } else if (await Permission.storage.request().isGranted) {
+    if (await Permission.manageExternalStorage.request().isGranted ||
+        await Permission.storage.request().isGranted) {
       setState(() => _hasPermission = true);
       _scanFiles();
     } else {
-      // Still denied
-      if (mounted) {
-        openAppSettings(); // Guide user to settings if permanently denied or stuck
-      }
+      if (mounted) openAppSettings();
     }
   }
 
   Future<void> _loadDailyWord() async {
     var word = await DailyWordService.getTodaysWord();
-    if (mounted) {
-      setState(() {
-        _dailyWord = word;
-      });
-    }
+    if (mounted) setState(() => _dailyWord = word);
   }
 
   Future<void> _scanFiles() async {
@@ -101,27 +83,57 @@ class _HomeScreenState extends State<HomeScreen> {
     var files = await FileScanner.scanDeviceForFiles();
     if (mounted) {
       setState(() {
-        // Just show top 5-10 here for performance in the sheet
-        _recentFiles = files.take(10).toList();
+        _allFiles = files;
+        _applyFilters();
         _isLoading = false;
       });
     }
   }
 
+  void _applyFilters() {
+    String keyword = _searchController.text.toLowerCase();
+    List<FileSystemEntity> temp = _allFiles;
+
+    if (_selectedCategory == 'Documents') {
+      temp = temp.where((f) {
+        String path = f.path.toLowerCase();
+        return path.endsWith('.pdf') ||
+            path.endsWith('.docx') ||
+            path.endsWith('.txt');
+      }).toList();
+    } else if (_selectedCategory == 'Photos') {
+      temp = temp.where((f) {
+        String path = f.path.toLowerCase();
+        return path.endsWith('.jpg') ||
+            path.endsWith('.png') ||
+            path.endsWith('.jpeg');
+      }).toList();
+    }
+
+    if (keyword.isNotEmpty) {
+      temp = temp
+          .where(
+            (file) => file.path.split('/').last.toLowerCase().contains(keyword),
+          )
+          .toList();
+    }
+
+    setState(() {
+      _filteredFiles = temp;
+    });
+  }
+
   Future<void> _pickFile() async {
-    // Standard picker handles its own temporary permission usually
     FilePickerResult? result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['pdf', 'txt', 'docx', 'jpg', 'png'],
     );
-    if (result != null) {
+    if (result != null)
       _openReader(result.files.single.path!, result.files.single.name);
-    }
   }
 
   Future<void> _scanDocument() async {
-    var status = await Permission.camera.request();
-    if (status.isGranted) {
+    if (await Permission.camera.request().isGranted) {
       try {
         final XFile? photo = await _picker.pickImage(
           source: ImageSource.camera,
@@ -167,32 +179,13 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text(
-                    "Set Sleep Timer",
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.deepPurple,
-                    ),
-                  ),
-                  if (_sleepTimer != null && _sleepTimer!.isActive)
-                    TextButton(
-                      onPressed: () {
-                        _sleepTimer?.cancel();
-                        Navigator.pop(ctx);
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text("Timer Cancelled")),
-                        );
-                      },
-                      child: const Text(
-                        "Cancel",
-                        style: TextStyle(color: Colors.red),
-                      ),
-                    ),
-                ],
+              const Text(
+                "Set Sleep Timer",
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.deepPurple,
+                ),
               ),
               const SizedBox(height: 10),
               ListTile(
@@ -202,14 +195,21 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               ListTile(
                 leading: const Icon(Icons.timer),
-                title: const Text("20 Minutes"),
-                onTap: () => _setTimer(20, ctx),
-              ),
-              ListTile(
-                leading: const Icon(Icons.timelapse),
                 title: const Text("30 Minutes"),
                 onTap: () => _setTimer(30, ctx),
               ),
+              if (_sleepTimer?.isActive ?? false)
+                ListTile(
+                  leading: const Icon(Icons.cancel, color: Colors.red),
+                  title: const Text(
+                    "Cancel Timer",
+                    style: TextStyle(color: Colors.red),
+                  ),
+                  onTap: () {
+                    _sleepTimer?.cancel();
+                    Navigator.pop(ctx);
+                  },
+                ),
             ],
           ),
         );
@@ -220,18 +220,13 @@ class _HomeScreenState extends State<HomeScreen> {
   void _setTimer(int minutes, BuildContext ctx) {
     _sleepTimer?.cancel();
     Navigator.pop(ctx);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text("Audio will stop in $minutes minutes")),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text("Stopping in $minutes mins")));
     _sleepTimer = Timer(Duration(minutes: minutes), () {
       if (globalAudioHandler != null) {
         globalAudioHandler!.pause();
         globalAudioHandler!.stop();
-      }
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Sleep Timer: Audio Paused")),
-        );
       }
     });
   }
@@ -248,6 +243,89 @@ class _HomeScreenState extends State<HomeScreen> {
             child: const Text("Close"),
           ),
         ],
+      ),
+    );
+  }
+
+  // --- UPDATED "ALIVE" QUICK ACTION ---
+  Widget _buildQuickAction(
+    IconData icon,
+    String label,
+    Color color,
+    VoidCallback onTap,
+  ) {
+    return Card(
+      elevation: 4,
+      shadowColor: color.withValues(alpha: 0.3),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(15),
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(15),
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                color.withValues(alpha: 0.1),
+                color.withValues(alpha: 0.05),
+              ],
+            ),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: color.withValues(alpha: 0.2),
+                ),
+                child: Icon(icon, size: 28, color: color),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                label,
+                style: TextStyle(
+                  color: color,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCategoryChip(String label) {
+    bool isSelected = _selectedCategory == label;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4.0),
+      child: ChoiceChip(
+        label: Text(label),
+        selected: isSelected,
+        onSelected: (bool selected) {
+          if (selected)
+            setState(() {
+              _selectedCategory = label;
+              _applyFilters();
+            });
+        },
+        selectedColor: Colors.deepPurple,
+        labelStyle: TextStyle(
+          color: isSelected ? Colors.white : Colors.deepPurple,
+          fontWeight: FontWeight.bold,
+        ),
+        backgroundColor: Colors.white,
+        side: BorderSide(
+          color: isSelected
+              ? Colors.transparent
+              : Colors.deepPurple.withValues(alpha: 0.2),
+        ),
+        elevation: isSelected ? 2 : 0,
       ),
     );
   }
@@ -273,7 +351,7 @@ class _HomeScreenState extends State<HomeScreen> {
       drawer: _buildDrawer(),
       body: Stack(
         children: [
-          // --- MAIN BACKGROUND CONTENT ---
+          // MAIN CONTENT
           Positioned.fill(
             child: SingleChildScrollView(
               padding: const EdgeInsets.symmetric(horizontal: 16.0),
@@ -281,33 +359,67 @@ class _HomeScreenState extends State<HomeScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const SizedBox(height: 10),
-                  // Search (Navigates to full library mostly, or we could link it to library screen)
-                  TextField(
-                    controller: _searchController,
-                    readOnly: true, // Make it a button to open library
-                    onTap: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const LibraryScreen(),
-                      ),
-                    ),
-                    decoration: InputDecoration(
-                      hintText: 'Search your library...',
-                      prefixIcon: const Icon(Icons.search),
-                      border: OutlineInputBorder(
+                  // Word of the Day Widget
+                  if (_dailyWord != null)
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 20, top: 10),
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [
+                            Colors.deepPurple.shade400,
+                            Colors.deepPurple.shade700,
+                          ],
+                        ),
                         borderRadius: BorderRadius.circular(15),
-                        borderSide: BorderSide.none,
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.deepPurple.withValues(alpha: 0.3),
+                            blurRadius: 8,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
                       ),
-                      filled: true,
-                      fillColor: isDark ? Colors.grey[800] : Colors.grey[200],
-                      contentPadding: const EdgeInsets.symmetric(vertical: 0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            "Word of the Day",
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white70,
+                            ),
+                          ),
+                          const SizedBox(height: 5),
+                          Text(
+                            _dailyWord!['word'],
+                            style: const TextStyle(
+                              fontSize: 24,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
+                          Text(
+                            _dailyWord!['meaning'],
+                            style: const TextStyle(
+                              fontSize: 16,
+                              color: Colors.white,
+                            ),
+                          ),
+                          const SizedBox(height: 5),
+                          Text(
+                            "\"${_dailyWord!['example']}\"",
+                            style: const TextStyle(
+                              fontSize: 14,
+                              color: Colors.white70,
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
 
-                  // Word of the Day
-                  if (_dailyWord != null) _buildWordOfTheDay(),
-
-                  const SizedBox(height: 20),
                   const Text(
                     "Quick Actions",
                     style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
@@ -357,49 +469,56 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 100), // Space for bottom sheet
+                  const SizedBox(height: 100), // Space for sheet
                 ],
               ),
             ),
           ),
 
-          // --- DRAGGABLE LIBRARY SHEET ---
+          // DRAGGABLE LIBRARY SHEET (FIXED: Handle pulls sheet)
           DraggableScrollableSheet(
-            initialChildSize: 0.4, // Starts covering 40% of screen
-            minChildSize: 0.15, // Header visible
-            maxChildSize: 0.95, // Almost full screen
+            initialChildSize: 0.4,
+            minChildSize: 0.12,
+            maxChildSize: 0.95,
             builder: (BuildContext context, ScrollController scrollController) {
               return Container(
                 decoration: BoxDecoration(
-                  color: isDark ? Colors.grey[900] : Colors.white,
+                  color: isDark ? Colors.grey[900] : Colors.grey[50],
                   borderRadius: const BorderRadius.vertical(
-                    top: Radius.circular(20),
+                    top: Radius.circular(25),
                   ),
                   boxShadow: [
                     BoxShadow(
-                      blurRadius: 10,
+                      blurRadius: 15,
                       color: Colors.black.withValues(alpha: 0.2),
+                      spreadRadius: 2,
                     ),
                   ],
                 ),
-                child: Column(
+                child: ListView(
+                  controller:
+                      scrollController, // Single controller for everything ensures drag works everywhere
+                  padding: EdgeInsets.zero,
                   children: [
                     // Handle
                     Center(
                       child: Container(
-                        margin: const EdgeInsets.only(top: 10),
-                        width: 40,
+                        margin: const EdgeInsets.only(top: 12, bottom: 8),
+                        width: 50,
                         height: 5,
                         decoration: BoxDecoration(
-                          color: Colors.grey[300],
+                          color: Colors.grey[400],
                           borderRadius: BorderRadius.circular(10),
                         ),
                       ),
                     ),
-                    const SizedBox(height: 10),
+
                     // Header
                     Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 5,
+                      ),
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
@@ -418,75 +537,78 @@ class _HomeScreenState extends State<HomeScreen> {
                         ],
                       ),
                     ),
-                    const Divider(),
-                    // List or Permission Warning
-                    Expanded(
-                      child: !_hasPermission
-                          ? Center(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  const Icon(
-                                    Icons.lock_outline,
-                                    size: 50,
-                                    color: Colors.grey,
-                                  ),
-                                  const SizedBox(height: 10),
-                                  const Text("Storage permission needed"),
-                                  TextButton(
-                                    onPressed: () => _checkPermissionAndScan(),
-                                    child: const Text("Grant Access"),
-                                  ),
-                                ],
-                              ),
-                            )
-                          : _isLoading
-                          ? const Center(child: CircularProgressIndicator())
-                          : ListView.builder(
-                              controller:
-                                  scrollController, // Important: Connects scrolling to sheet drag
-                              itemCount: _recentFiles.length + 1,
-                              itemBuilder: (context, index) {
-                                if (index == _recentFiles.length) {
-                                  // View All button at bottom
-                                  return Padding(
-                                    padding: const EdgeInsets.all(20.0),
-                                    child: ElevatedButton(
-                                      onPressed: () => Navigator.push(
-                                        context,
-                                        MaterialPageRoute(
-                                          builder: (context) =>
-                                              const LibraryScreen(),
-                                        ),
-                                      ),
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: Colors.deepPurple,
-                                        foregroundColor: Colors.white,
-                                      ),
-                                      child: const Text("View Full Library"),
-                                    ),
-                                  );
-                                }
-                                File file = _recentFiles[index] as File;
-                                String name = file.path.split('/').last;
 
-                                // Simple Icon logic
-                                IconData icon = Icons.insert_drive_file;
-                                if (name.toLowerCase().endsWith('.pdf'))
-                                  icon = Icons.picture_as_pdf;
-                                else if (name.toLowerCase().endsWith('.docx'))
-                                  icon = Icons.description;
-                                else if (name.toLowerCase().endsWith('.jpg'))
-                                  icon = Icons.image;
-
-                                return ListTile(
-                                  leading: Icon(icon, color: Colors.deepPurple),
-                                  title: Text(name),
-                                  onTap: () => _openReader(file.path, name),
-                                );
-                              },
-                            ),
+                    // Categories (Now inside sheet)
+                    SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 10,
+                      ),
+                      child: Row(
+                        children: [
+                          _buildCategoryChip('All'),
+                          _buildCategoryChip('Documents'),
+                          _buildCategoryChip('Photos'),
+                        ],
+                      ),
                     ),
+                    const Divider(height: 1),
+
+                    // Content
+                    if (!_hasPermission)
+                      Padding(
+                        padding: const EdgeInsets.all(40.0),
+                        child: Column(
+                          children: [
+                            const Icon(
+                              Icons.lock,
+                              size: 40,
+                              color: Colors.grey,
+                            ),
+                            const Text("Permission needed to show files."),
+                          ],
+                        ),
+                      )
+                    else if (_isLoading)
+                      const Padding(
+                        padding: EdgeInsets.all(40.0),
+                        child: Center(child: CircularProgressIndicator()),
+                      )
+                    else if (_filteredFiles.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.all(40.0),
+                        child: Center(child: Text("No files found.")),
+                      )
+                    else
+                      // Since we are inside a ListView already, we use spread operator or builder logic carefully
+                      // But ListView inside ListView is bad.
+                      // Solution: We are using a single ListView for the whole sheet.
+                      // We map the files to widgets here.
+                      ..._filteredFiles.map((file) {
+                        String name = file.path.split('/').last;
+                        IconData icon = Icons.insert_drive_file;
+                        Color color = Colors.grey;
+                        if (name.endsWith('.pdf')) {
+                          icon = Icons.picture_as_pdf;
+                          color = Colors.red;
+                        } else if (name.endsWith('.docx')) {
+                          icon = Icons.description;
+                          color = Colors.blue;
+                        } else if (name.endsWith('.jpg')) {
+                          icon = Icons.image;
+                          color = Colors.purple;
+                        }
+
+                        return ListTile(
+                          leading: Icon(icon, color: color),
+                          title: Text(name),
+                          onTap: () => _openReader(file.path, name),
+                        );
+                      }).toList(),
+
+                    // Bottom Padding
+                    const SizedBox(height: 80),
                   ],
                 ),
               );
@@ -497,105 +619,11 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildWordOfTheDay() {
-    if (_dailyWord == null) return const SizedBox.shrink();
-
-    bool isDark = Theme.of(context).brightness == Brightness.dark;
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 20, top: 10),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: isDark
-            ? Colors.deepPurple.shade900.withValues(alpha: 0.5)
-            : Colors.deepPurple.shade50,
-        borderRadius: BorderRadius.circular(15),
-        border: Border.all(color: Colors.deepPurple.withValues(alpha: 0.3)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text(
-                "Word of the Day",
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.deepPurple,
-                ),
-              ),
-              Text(
-                _dailyWord!['language'] ?? 'Unknown',
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontStyle: FontStyle.italic,
-                  color: Colors.grey,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 5),
-          Text(
-            _dailyWord!['word'] ?? '',
-            style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-          ),
-          Text(
-            _dailyWord!['meaning'] ?? '',
-            style: const TextStyle(fontSize: 16, color: Colors.deepPurple),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            "\"${_dailyWord!['example'] ?? ''}\"",
-            style: TextStyle(
-              fontSize: 14,
-              color: isDark ? Colors.grey[300] : Colors.grey[800],
-              fontStyle: FontStyle.italic,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildQuickAction(
-    IconData icon,
-    String label,
-    Color color,
-    VoidCallback onTap,
-  ) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(15),
-      child: Container(
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.1),
-          borderRadius: BorderRadius.circular(15),
-          border: Border.all(color: color.withValues(alpha: 0.3)),
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(icon, size: 32, color: color),
-            const SizedBox(height: 8),
-            Text(
-              label,
-              style: TextStyle(
-                color: color,
-                fontWeight: FontWeight.bold,
-                fontSize: 12,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   Widget _buildDrawer() {
     return Drawer(
-      child: Column(
+      child: ListView(
+        // Changed to ListView to prevent overflow
+        padding: EdgeInsets.zero,
         children: [
           const DrawerHeader(
             decoration: BoxDecoration(color: Colors.deepPurple),
@@ -621,9 +649,8 @@ class _HomeScreenState extends State<HomeScreen> {
             title: const Text('My Library'),
             onTap: () => Navigator.pop(context),
           ),
-
           ListTile(
-            leading: const Icon(Icons.bar_chart, color: Colors.deepPurple),
+            leading: const Icon(Icons.bar_chart),
             title: const Text('Your Progress'),
             onTap: () {
               Navigator.pop(context);
@@ -633,7 +660,6 @@ class _HomeScreenState extends State<HomeScreen> {
               );
             },
           ),
-
           ListTile(
             leading: const Icon(Icons.history),
             title: const Text('History'),
@@ -645,7 +671,6 @@ class _HomeScreenState extends State<HomeScreen> {
               );
             },
           ),
-
           ListTile(
             leading: const Icon(Icons.bookmarks),
             title: const Text('Bookmarks'),
@@ -659,7 +684,6 @@ class _HomeScreenState extends State<HomeScreen> {
               );
             },
           ),
-
           ListTile(
             leading: const Icon(Icons.menu_book),
             title: const Text('Offline Dictionary'),
@@ -673,18 +697,7 @@ class _HomeScreenState extends State<HomeScreen> {
               );
             },
           ),
-
           const Divider(),
-
-          ListTile(
-            leading: const Icon(Icons.timer),
-            title: const Text('Sleep Timer'),
-            onTap: () {
-              Navigator.pop(context);
-              _showSleepTimerDialog();
-            },
-          ),
-
           ListTile(
             leading: const Icon(Icons.settings),
             title: const Text('Settings'),
@@ -704,25 +717,11 @@ class _HomeScreenState extends State<HomeScreen> {
               _showAboutDialog();
             },
           ),
-
           const Divider(),
-
           ListTile(
             leading: const Icon(Icons.exit_to_app, color: Colors.red),
-            title: const Text(
-              'Exit App',
-              style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
-            ),
+            title: const Text('Exit App', style: TextStyle(color: Colors.red)),
             onTap: _exitApp,
-          ),
-
-          const Spacer(),
-          const Padding(
-            padding: EdgeInsets.all(20.0),
-            child: Text(
-              "v2.1.0 • Chiza Labs",
-              style: TextStyle(color: Colors.grey),
-            ),
           ),
         ],
       ),

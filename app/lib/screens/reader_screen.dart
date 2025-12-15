@@ -8,6 +8,7 @@ import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart
 import 'package:path_provider/path_provider.dart';
 import 'package:audio_session/audio_session.dart';
 import 'package:audio_service/audio_service.dart';
+import 'package:shared_preferences/shared_preferences.dart'; // NEW: For Settings
 import 'dart:io';
 import 'dart:async';
 import '../services/translation_service.dart';
@@ -17,7 +18,7 @@ import '../services/audio_manager.dart';
 import '../services/bookmark_service.dart';
 import '../services/stats_service.dart';
 
-// --- WORKERS ---
+// --- BACKGROUND WORKERS ---
 String _backgroundCleanText(String text) =>
     text.replaceAll(RegExp(r'\s+'), ' ').trim();
 
@@ -79,8 +80,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
   String _loadingMessage = "Initializing...";
   bool _isPlaying = false;
 
+  // Settings with Defaults (Will be overwritten by _loadPreferences)
   double _speechRate = 0.5;
   double _pitch = 1.0;
+  bool _keepScreenOn = false;
+
   String _currentLang = 'en';
   List<Map<String, String>> _voices = [];
   Map<String, String>? _currentVoice;
@@ -93,13 +97,14 @@ class _ReaderScreenState extends State<ReaderScreen> {
   Timer? _debounce;
   Timer? _sleepTimer;
 
-  // Immersive Mode State
+  // Immersive Mode
   bool _controlsVisible = true;
   Timer? _controlsTimer;
 
   @override
   void initState() {
     super.initState();
+    _loadPreferences(); // NEW: Load user settings
     _setupAudioSystem();
     _loadOrExtractText();
     _resetControlsTimer();
@@ -122,13 +127,29 @@ class _ReaderScreenState extends State<ReaderScreen> {
     super.dispose();
   }
 
+  // --- NEW: LOAD USER PREFERENCES ---
+  Future<void> _loadPreferences() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() {
+        _speechRate = prefs.getDouble('default_speed') ?? 0.5;
+        _pitch = prefs.getDouble('default_pitch') ?? 1.0;
+        _keepScreenOn = prefs.getBool('keep_screen_on') ?? false;
+      });
+      // Apply initial settings to engine
+      await _flutterTts.setSpeechRate(_speechRate);
+      await _flutterTts.setPitch(_pitch);
+      // Note: Actual screen wake lock would require 'wakelock_plus' plugin
+      // For now we just store the preference.
+    }
+  }
+
   // --- IMMERSIVE MODE LOGIC ---
   void _resetControlsTimer() {
     _controlsTimer?.cancel();
     if (!_controlsVisible) {
       if (mounted) setState(() => _controlsVisible = true);
     }
-    // Auto-hide after 3 seconds if playing
     if (_isPlaying) {
       _controlsTimer = Timer(const Duration(seconds: 3), () {
         if (mounted && _isPlaying) {
@@ -143,7 +164,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (_controlsVisible) _resetControlsTimer();
   }
 
-  // --- AUDIO SETUP ---
+  // --- AUDIO & CONTROLS SETUP ---
   Future<void> _setupAudioSystem() async {
     final session = await AudioSession.instance;
     await session.configure(const AudioSessionConfiguration.music());
@@ -162,6 +183,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       } else if (!state.playing && _isPlaying) {
         _pausePlayback();
       }
+
       if (state.processingState == AudioProcessingState.idle && _isPlaying) {
         _stopPlayback();
       }
@@ -173,6 +195,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     });
 
     await _flutterTts.awaitSpeakCompletion(true);
+    // These calls are redundant with _loadPreferences but safe to keep
     await _flutterTts.setSpeechRate(_speechRate);
     await _flutterTts.setPitch(_pitch);
 
@@ -209,7 +232,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _initVoices();
   }
 
-  // ... (Voices, Formats, File Logic) ...
   Future<void> _initVoices() async {
     await Future.delayed(const Duration(milliseconds: 500));
     try {
@@ -255,8 +277,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   Map<String, dynamic> _getVoiceDisplayInfo(String rawName, String locale) {
     String lowerName = rawName.toLowerCase();
-    IconData icon = Icons.record_voice_over;
     String label = "";
+    IconData icon = Icons.record_voice_over;
     if (lowerName.contains("female") ||
         lowerName.contains("-f-") ||
         lowerName.contains("woman")) {
@@ -272,6 +294,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
     String title = label.isNotEmpty ? "$label - $prettyName" : prettyName;
     return {"title": title, "subtitle": locale, "icon": icon};
   }
+
+  // --- FILE LOGIC & STATS ---
 
   Future<void> _loadOrExtractText() async {
     setState(() {
@@ -307,7 +331,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
       });
       await _loadPageContent(savedPage);
 
+      // STATS: Record book open
       StatsService.recordBookOpen(widget.filePath);
+
       _audioHandler?.setMediaItem(
         widget.fileName,
         "Page ${savedPage + 1} of ${pages.length}",
@@ -362,7 +388,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
   Future<void> _changePage(int newIndex, {bool autoPlay = false}) async {
     if (newIndex < 0 || newIndex >= _pages.length) return;
     await _flutterTts.stop();
-    if (newIndex > _currentPageIndex) StatsService.incrementPageCount();
+
+    // STATS: Record page turn
+    if (newIndex > _currentPageIndex) {
+      StatsService.incrementPageCount();
+    }
 
     setState(() {
       _currentPageIndex = newIndex;
@@ -446,13 +476,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   Future<void> _togglePlay() async {
-    if (_isPlaying)
+    if (_isPlaying) {
       await _pausePlayback();
-    else
+    } else {
       await _playCurrentPage();
+    }
   }
 
-  // ... (Bookmarks, Extract, Cache, Voice, Save Audio, Menus) ...
   Future<void> _addBookmark([int? targetIndex]) async {
     int localIndex = targetIndex ?? _currentWordStart;
     int globalIndex = (_currentPageIndex * 3000) + localIndex;
@@ -536,6 +566,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       setState(() {
         _loadingMessage = "Processing file...";
       });
+
       if (ext.endsWith('.pdf')) {
         rawText = await ReadPdfText.getPDFtext(widget.filePath);
       } else if (ext.endsWith('.txt')) {
@@ -561,6 +592,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       } else {
         rawText = "Unsupported file type.";
       }
+
       setState(() {
         _loadingMessage = "Optimizing...";
       });
@@ -685,6 +717,16 @@ class _ReaderScreenState extends State<ReaderScreen> {
     showModalBottomSheet(
       context: context,
       builder: (ctx) {
+        // Filter voices based on current content language
+        String targetPrefix = 'en';
+        if (_currentLang == 'fr') targetPrefix = 'fr';
+        if (_currentLang == 'es') targetPrefix = 'es';
+        // 'bem' and 'nya' default to 'en'
+
+        List<Map<String, String>> filteredVoices = _voices.where((v) {
+          return v['locale']!.toLowerCase().startsWith(targetPrefix);
+        }).toList();
+
         return Container(
           padding: const EdgeInsets.all(16),
           child: Column(
@@ -693,33 +735,46 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 "Select Voice",
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
               ),
+              const SizedBox(height: 10),
               Expanded(
-                child: ListView.builder(
-                  itemCount: _voices.length,
-                  itemBuilder: (c, i) {
-                    var voice = _voices[i];
-                    var displayInfo = _getVoiceDisplayInfo(
-                      voice["name"]!,
-                      voice["locale"]!,
-                    );
-                    bool isSelected = _currentVoice == voice;
-                    return ListTile(
-                      leading: Icon(displayInfo['icon'], color: Colors.grey),
-                      title: Text(displayInfo['title']),
-                      subtitle: Text(displayInfo['subtitle']),
-                      trailing: isSelected
-                          ? const Icon(
-                              Icons.check_circle,
-                              color: Colors.deepPurple,
-                            )
-                          : null,
-                      onTap: () {
-                        _setVoice(voice);
-                        Navigator.pop(ctx);
-                      },
-                    );
-                  },
-                ),
+                child: filteredVoices.isEmpty
+                    ? const Center(
+                        child: Text("No voices found for this language."),
+                      )
+                    : ListView.builder(
+                        itemCount: filteredVoices.length,
+                        itemBuilder: (c, i) {
+                          var voice = filteredVoices[i];
+                          var displayInfo = _getVoiceDisplayInfo(
+                            voice["name"]!,
+                            voice["locale"]!,
+                          );
+
+                          bool isSelected =
+                              _currentVoice != null &&
+                              _currentVoice!['name'] == voice['name'] &&
+                              _currentVoice!['locale'] == voice['locale'];
+
+                          return ListTile(
+                            leading: Icon(
+                              displayInfo['icon'],
+                              color: Colors.grey,
+                            ),
+                            title: Text(displayInfo['title']),
+                            subtitle: Text(displayInfo['subtitle']),
+                            trailing: isSelected
+                                ? const Icon(
+                                    Icons.check_circle,
+                                    color: Colors.deepPurple,
+                                  )
+                                : null,
+                            onTap: () {
+                              _setVoice(voice);
+                              Navigator.pop(ctx);
+                            },
+                          );
+                        },
+                      ),
               ),
             ],
           ),
@@ -884,6 +939,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (!mounted) return;
     if (_isPlaying) _pausePlayback();
     bool isBookmarked = _pageBookmarkIndices.contains(startIndex);
+
     showModalBottomSheet(
       context: context,
       builder: (ctx) {
@@ -963,6 +1019,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       );
   }
 
+  // --- SLEEP TIMER ---
   void _showSleepTimerDialog() {
     if (!mounted) return;
     showModalBottomSheet(
@@ -1046,7 +1103,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: GestureDetector(
-        onTap: _toggleControls, // Toggling controls on screen tap
+        onTap: _toggleControls,
         child: Stack(
           children: [
             Column(
@@ -1123,7 +1180,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
               ],
             ),
 
-            // --- TOP APP BAR (Animated) ---
+            // --- TOP APP BAR (Auto-Hiding) ---
             AnimatedPositioned(
               duration: const Duration(milliseconds: 300),
               top: _controlsVisible ? 0 : -100,
@@ -1232,10 +1289,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
               ),
             ),
 
-            // --- BOTTOM CONTROLS (Animated) ---
+            // --- BOTTOM CONTROLS (Auto-Hiding) ---
             AnimatedPositioned(
               duration: const Duration(milliseconds: 300),
-              bottom: _controlsVisible ? 20 : -100,
+              bottom: _controlsVisible ? 80 : -100, // Hide below screen
               left: 0,
               right: 0,
               child: Center(
@@ -1305,6 +1362,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       bool isHighlighted =
           _currentWordStart >= wordStart && _currentWordStart < wordEnd;
       bool isBookmarked = _pageBookmarkIndices.contains(wordStart);
+
       if (isBookmarked) {
         spans.add(
           WidgetSpan(
@@ -1330,6 +1388,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
           ),
         );
       }
+
       spans.add(
         TextSpan(
           text: "$word ",
