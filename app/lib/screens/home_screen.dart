@@ -1,17 +1,19 @@
 import 'dart:io';
-import 'dart:async'; // Required for Timer
+import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; // Required for SystemNavigator (Exit App)
+import 'package:flutter/services.dart'; // REQUIRED for SystemNavigator
 import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../services/file_scanner.dart';
-import '../services/audio_manager.dart'; // Import for globalAudioHandler
+import '../services/audio_manager.dart'; // REQUIRED for globalAudioHandler
+import '../services/daily_word_service.dart';
 import 'reader_screen.dart';
 import 'dictionary_screen.dart';
 import 'settings_screen.dart';
 import 'history_screen.dart';
 import 'bookmarks_screen.dart';
+import 'stats_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -28,19 +30,29 @@ class _HomeScreenState extends State<HomeScreen> {
   final ImagePicker _picker = ImagePicker();
   String _selectedCategory = 'All';
 
-  // Sleep Timer State
   Timer? _sleepTimer;
+  Map<String, dynamic>? _dailyWord;
 
   @override
   void initState() {
     super.initState();
     _scanFiles();
+    _loadDailyWord();
   }
 
   @override
   void dispose() {
     _sleepTimer?.cancel();
     super.dispose();
+  }
+
+  Future<void> _loadDailyWord() async {
+    var word = await DailyWordService.getTodaysWord();
+    if (mounted) {
+      setState(() {
+        _dailyWord = word;
+      });
+    }
   }
 
   Future<void> _scanFiles() async {
@@ -102,13 +114,16 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _scanDocument() async {
     var status = await Permission.camera.status;
-    if (!status.isGranted) status = await Permission.camera.request();
+    if (!status.isGranted) {
+      status = await Permission.camera.request();
+    }
 
     if (status.isDenied) {
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text("Camera permission is required.")),
         );
+      }
       return;
     }
 
@@ -146,10 +161,11 @@ class _HomeScreenState extends State<HomeScreen> {
         _openReader(photo.path, "Scanned Document");
       }
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text("Error: $e")));
+      }
     }
   }
 
@@ -162,9 +178,9 @@ class _HomeScreenState extends State<HomeScreen> {
     ).then((_) {});
   }
 
-  // --- NEW: EXIT APP FUNCTION ---
+  // --- EXIT APP FUNCTION ---
   Future<void> _exitApp() async {
-    // 1. Stop any playing audio via the global handler
+    // 1. Stop audio using the global handler from audio_manager.dart
     if (globalAudioHandler != null) {
       await globalAudioHandler!.stop();
     }
@@ -272,7 +288,7 @@ class _HomeScreenState extends State<HomeScreen> {
       builder: (ctx) => AlertDialog(
         title: const Text("AUDIRE"),
         content: const Text(
-          "Version 2.0.0\nBuilt by Chiza Labs.\n\nThe Ultimate Offline Audio Reader.",
+          "Version 2.1.0\nBuilt by Chiza Labs.\n\nThe Ultimate Offline Audio Reader.",
         ),
         actions: [
           TextButton(
@@ -295,9 +311,9 @@ class _HomeScreenState extends State<HomeScreen> {
       borderRadius: BorderRadius.circular(15),
       child: Container(
         decoration: BoxDecoration(
-          color: color.withOpacity(0.1),
+          color: color.withValues(alpha: 0.1),
           borderRadius: BorderRadius.circular(15),
-          border: Border.all(color: color.withOpacity(0.3)),
+          border: Border.all(color: color.withValues(alpha: 0.3)),
         ),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -349,6 +365,68 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Widget _buildWordOfTheDay() {
+    if (_dailyWord == null) return const SizedBox.shrink();
+
+    bool isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 20, top: 10),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: isDark
+            ? Colors.deepPurple.shade900.withValues(alpha: 0.5)
+            : Colors.deepPurple.shade50,
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: Colors.deepPurple.withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                "Word of the Day",
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.deepPurple,
+                ),
+              ),
+              Text(
+                _dailyWord!['language'] ?? 'Unknown',
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontStyle: FontStyle.italic,
+                  color: Colors.grey,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 5),
+          Text(
+            _dailyWord!['word'] ?? '',
+            style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+          ),
+          Text(
+            _dailyWord!['meaning'] ?? '',
+            style: const TextStyle(fontSize: 16, color: Colors.deepPurple),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            "\"${_dailyWord!['example'] ?? ''}\"",
+            style: TextStyle(
+              fontSize: 14,
+              color: isDark ? Colors.grey[300] : Colors.grey[800],
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     bool isDark = Theme.of(context).brightness == Brightness.dark;
@@ -390,7 +468,9 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
 
-            const SizedBox(height: 20),
+            // NEW: Add the Word of the Day widget here
+            _buildWordOfTheDay(),
+
             const Text(
               "Quick Actions",
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
@@ -504,14 +584,14 @@ class _HomeScreenState extends State<HomeScreen> {
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(10),
                             side: BorderSide(
-                              color: Colors.grey.withOpacity(0.2),
+                              color: Colors.grey.withValues(alpha: 0.2),
                             ),
                           ),
                           child: ListTile(
                             leading: Container(
                               padding: const EdgeInsets.all(8),
                               decoration: BoxDecoration(
-                                color: iconColor.withOpacity(0.1),
+                                color: iconColor.withValues(alpha: 0.1),
                                 borderRadius: BorderRadius.circular(8),
                               ),
                               child: Icon(icon, color: iconColor),
@@ -571,6 +651,19 @@ class _HomeScreenState extends State<HomeScreen> {
             title: const Text('My Library'),
             onTap: () => Navigator.pop(context),
           ),
+
+          ListTile(
+            leading: const Icon(Icons.bar_chart, color: Colors.deepPurple),
+            title: const Text('Your Progress'),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const StatsScreen()),
+              );
+            },
+          ),
+
           ListTile(
             leading: const Icon(Icons.history),
             title: const Text('History'),
@@ -644,7 +737,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
           const Divider(),
 
-          // --- NEW: EXIT BUTTON ---
+          // --- EXIT BUTTON ---
           ListTile(
             leading: const Icon(Icons.exit_to_app, color: Colors.red),
             title: const Text(

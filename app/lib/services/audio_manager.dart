@@ -1,12 +1,12 @@
 import 'package:audio_service/audio_service.dart';
-import 'package:flutter/foundation.dart';
 
-// Global accessor
+// 1. GLOBAL ACCESSOR (Fixed: Defined here so HomeScreen can see it)
 TtsAudioHandler? globalAudioHandler;
 
 class TtsAudioHandler extends BaseAudioHandler {
   static Future<TtsAudioHandler> init() async {
     final handler = TtsAudioHandler();
+    // Assign to global var
     globalAudioHandler = handler;
 
     return await AudioService.init(
@@ -18,19 +18,19 @@ class TtsAudioHandler extends BaseAudioHandler {
         androidShowNotificationBadge: true,
         androidNotificationIcon: 'mipmap/launcher_icon',
         androidNotificationClickStartsActivity: true,
-        // Ensure the notification can be dismissed when stopped
         androidStopForegroundOnPause: true,
       ),
     );
   }
 
+  // Fixed Signature: 3 arguments
   void setMediaItem(String title, String contentInfo, Duration duration) {
     mediaItem.add(
       MediaItem(
         id: 'audire_tts',
         album: 'Audire Reader',
         title: title,
-        artist: contentInfo, // Display "Page 1 of 5" here
+        artist: contentInfo,
         duration: duration,
         artUri: Uri.parse(
           'https://via.placeholder.com/150/512DA8/FFFFFF?text=Audire',
@@ -45,7 +45,7 @@ class TtsAudioHandler extends BaseAudioHandler {
         controls: [
           MediaControl.rewind,
           if (isPlaying) MediaControl.pause else MediaControl.play,
-          MediaControl.stop, // Added Stop button
+          MediaControl.stop,
           MediaControl.fastForward,
         ],
         systemActions: const {
@@ -55,7 +55,6 @@ class TtsAudioHandler extends BaseAudioHandler {
         },
         androidCompactActionIndices: const [0, 1, 2],
         playing: isPlaying,
-        // If stopped, we are 'idle', otherwise 'ready'
         processingState: isPlaying
             ? AudioProcessingState.ready
             : AudioProcessingState.idle,
@@ -66,7 +65,6 @@ class TtsAudioHandler extends BaseAudioHandler {
   @override
   Future<void> play() async {
     playbackState.add(playbackState.value.copyWith(playing: true));
-    // We don't trigger TTS here directly; the UI listens to this state change
   }
 
   @override
@@ -82,7 +80,6 @@ class TtsAudioHandler extends BaseAudioHandler {
         processingState: AudioProcessingState.idle,
       ),
     );
-    // Clear notification
     await super.stop();
   }
 
