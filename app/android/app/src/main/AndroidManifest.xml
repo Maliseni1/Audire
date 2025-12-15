@@ -3,15 +3,15 @@
     <!-- Permissions for File Reading/Writing -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
-    <!-- CRITICAL: Allows access to Documents/Downloads on Android 11+ -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     
     <!-- Permissions for Background Audio -->
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
-    <!-- CRITICAL: Allows the notification bar controls to persist -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
-
-    <!-- Permission for Camera -->
+    <!-- NEW: Required for Android 13+ Notifications -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    
+    <!-- Camera -->
     <uses-permission android:name="android.permission.CAMERA"/>
     
     <application
@@ -40,7 +40,7 @@
             </intent-filter>
         </activity>
         
-        <!-- ADD THIS SERVICE BLOCK FOR AUDIO CONTROLS -->
+        <!-- Audio Service -->
         <service android:name="com.ryanheise.audioservice.AudioService"
             android:foregroundServiceType="mediaPlayback"
             android:exported="true">
@@ -54,7 +54,6 @@
             android:value="2" />
     </application>
 
-    <!-- Allows the app to query text processing services -->
     <queries>
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>

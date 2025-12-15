@@ -17,7 +17,7 @@ import '../services/audio_manager.dart';
 import '../services/bookmark_service.dart';
 import '../services/stats_service.dart';
 
-// --- BACKGROUND WORKERS ---
+// --- WORKERS ---
 String _backgroundCleanText(String text) =>
     text.replaceAll(RegExp(r'\s+'), ' ').trim();
 
@@ -93,11 +93,16 @@ class _ReaderScreenState extends State<ReaderScreen> {
   Timer? _debounce;
   Timer? _sleepTimer;
 
+  // Immersive Mode State
+  bool _controlsVisible = true;
+  Timer? _controlsTimer;
+
   @override
   void initState() {
     super.initState();
     _setupAudioSystem();
     _loadOrExtractText();
+    _resetControlsTimer();
   }
 
   @override
@@ -107,6 +112,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _eventSubscription?.cancel();
     _debounce?.cancel();
     _sleepTimer?.cancel();
+    _controlsTimer?.cancel();
     _scrollController.dispose();
     HistoryService.saveProgress(
       widget.filePath,
@@ -116,7 +122,28 @@ class _ReaderScreenState extends State<ReaderScreen> {
     super.dispose();
   }
 
-  // --- AUDIO & CONTROLS SETUP ---
+  // --- IMMERSIVE MODE LOGIC ---
+  void _resetControlsTimer() {
+    _controlsTimer?.cancel();
+    if (!_controlsVisible) {
+      if (mounted) setState(() => _controlsVisible = true);
+    }
+    // Auto-hide after 3 seconds if playing
+    if (_isPlaying) {
+      _controlsTimer = Timer(const Duration(seconds: 3), () {
+        if (mounted && _isPlaying) {
+          setState(() => _controlsVisible = false);
+        }
+      });
+    }
+  }
+
+  void _toggleControls() {
+    setState(() => _controlsVisible = !_controlsVisible);
+    if (_controlsVisible) _resetControlsTimer();
+  }
+
+  // --- AUDIO SETUP ---
   Future<void> _setupAudioSystem() async {
     final session = await AudioSession.instance;
     await session.configure(const AudioSessionConfiguration.music());
@@ -135,7 +162,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
       } else if (!state.playing && _isPlaying) {
         _pausePlayback();
       }
-
       if (state.processingState == AudioProcessingState.idle && _isPlaying) {
         _stopPlayback();
       }
@@ -183,6 +209,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _initVoices();
   }
 
+  // ... (Voices, Formats, File Logic) ...
   Future<void> _initVoices() async {
     await Future.delayed(const Duration(milliseconds: 500));
     try {
@@ -228,8 +255,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   Map<String, dynamic> _getVoiceDisplayInfo(String rawName, String locale) {
     String lowerName = rawName.toLowerCase();
-    String label = "";
     IconData icon = Icons.record_voice_over;
+    String label = "";
     if (lowerName.contains("female") ||
         lowerName.contains("-f-") ||
         lowerName.contains("woman")) {
@@ -245,8 +272,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
     String title = label.isNotEmpty ? "$label - $prettyName" : prettyName;
     return {"title": title, "subtitle": locale, "icon": icon};
   }
-
-  // --- FILE LOGIC & STATS ---
 
   Future<void> _loadOrExtractText() async {
     setState(() {
@@ -282,9 +307,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       });
       await _loadPageContent(savedPage);
 
-      // STATS: Record book open
       StatsService.recordBookOpen(widget.filePath);
-
       _audioHandler?.setMediaItem(
         widget.fileName,
         "Page ${savedPage + 1} of ${pages.length}",
@@ -339,11 +362,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   Future<void> _changePage(int newIndex, {bool autoPlay = false}) async {
     if (newIndex < 0 || newIndex >= _pages.length) return;
     await _flutterTts.stop();
-
-    // STATS: Record page turn
-    if (newIndex > _currentPageIndex) {
-      StatsService.incrementPageCount();
-    }
+    if (newIndex > _currentPageIndex) StatsService.incrementPageCount();
 
     setState(() {
       _currentPageIndex = newIndex;
@@ -371,12 +390,14 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
     await _flutterTts.speak(textToSpeak);
     _audioHandler?.setPlaybackState(isPlaying: true);
+    _resetControlsTimer();
   }
 
   Future<void> _pausePlayback() async {
     await _flutterTts.stop();
     if (mounted) setState(() => _isPlaying = false);
     _audioHandler?.setPlaybackState(isPlaying: false);
+    setState(() => _controlsVisible = true);
   }
 
   Future<void> _stopPlayback() async {
@@ -387,6 +408,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
         _currentWordStart = 0;
         _currentWordEnd = 0;
         _currentSpeechOffset = 0;
+        _controlsVisible = true;
       });
     }
     _audioHandler?.stop();
@@ -420,16 +442,17 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (index < _currentPageContent.length) {
       await _flutterTts.speak(_currentPageContent.substring(index));
     }
+    _resetControlsTimer();
   }
 
   Future<void> _togglePlay() async {
-    if (_isPlaying) {
+    if (_isPlaying)
       await _pausePlayback();
-    } else {
+    else
       await _playCurrentPage();
-    }
   }
 
+  // ... (Bookmarks, Extract, Cache, Voice, Save Audio, Menus) ...
   Future<void> _addBookmark([int? targetIndex]) async {
     int localIndex = targetIndex ?? _currentWordStart;
     int globalIndex = (_currentPageIndex * 3000) + localIndex;
@@ -513,7 +536,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
       setState(() {
         _loadingMessage = "Processing file...";
       });
-
       if (ext.endsWith('.pdf')) {
         rawText = await ReadPdfText.getPDFtext(widget.filePath);
       } else if (ext.endsWith('.txt')) {
@@ -539,7 +561,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
       } else {
         rawText = "Unsupported file type.";
       }
-
       setState(() {
         _loadingMessage = "Optimizing...";
       });
@@ -863,7 +884,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (!mounted) return;
     if (_isPlaying) _pausePlayback();
     bool isBookmarked = _pageBookmarkIndices.contains(startIndex);
-
     showModalBottomSheet(
       context: context,
       builder: (ctx) {
@@ -1025,195 +1045,252 @@ class _ReaderScreenState extends State<ReaderScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text(
-          widget.fileName,
-          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-        ),
-        actions: [
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert),
-            onSelected: (value) {
-              switch (value) {
-                case 'bookmark':
-                  _addBookmark();
-                  break;
-                case 'save':
-                  _saveToAudioFile();
-                  break;
-                case 'voice':
-                  _showVoicePicker();
-                  break;
-                case 'translate':
-                  _showLanguagePicker();
-                  break;
-                case 'settings':
-                  _showAudioSettings();
-                  break;
-                case 'timer':
-                  _showSleepTimerDialog();
-                  break;
-              }
-            },
-            itemBuilder: (BuildContext context) {
-              return [
-                const PopupMenuItem(
-                  value: 'bookmark',
-                  child: Row(
-                    children: [
-                      Icon(Icons.bookmark_add, color: Colors.grey),
-                      SizedBox(width: 10),
-                      Text('Bookmark Page'),
-                    ],
-                  ),
+      body: GestureDetector(
+        onTap: _toggleControls, // Toggling controls on screen tap
+        child: Stack(
+          children: [
+            Column(
+              children: [
+                Expanded(
+                  child: _isLoading
+                      ? Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const CircularProgressIndicator(),
+                              const SizedBox(height: 20),
+                              Text(
+                                _loadingMessage,
+                                textAlign: TextAlign.center,
+                              ),
+                            ],
+                          ),
+                        )
+                      : Padding(
+                          padding: const EdgeInsets.all(16.0),
+                          child: SingleChildScrollView(
+                            controller: _scrollController,
+                            child: Padding(
+                              padding: const EdgeInsets.only(
+                                top: 60.0,
+                                bottom: 80.0,
+                              ), // Padding to avoid overlap
+                              child: _buildInteractiveText(),
+                            ),
+                          ),
+                        ),
                 ),
-                const PopupMenuItem(
-                  value: 'save',
-                  child: Row(
-                    children: [
-                      Icon(Icons.save_alt, color: Colors.grey),
-                      SizedBox(width: 10),
-                      Text('Save Audio'),
-                    ],
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'timer',
-                  child: Row(
-                    children: [
-                      Icon(Icons.timer, color: Colors.grey),
-                      SizedBox(width: 10),
-                      Text('Sleep Timer'),
-                    ],
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'voice',
-                  child: Row(
-                    children: [
-                      Icon(Icons.record_voice_over, color: Colors.grey),
-                      SizedBox(width: 10),
-                      Text('Select Voice'),
-                    ],
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'translate',
-                  child: Row(
-                    children: [
-                      Icon(Icons.translate, color: Colors.grey),
-                      SizedBox(width: 10),
-                      Text('Translate'),
-                    ],
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'settings',
-                  child: Row(
-                    children: [
-                      Icon(Icons.tune, color: Colors.grey),
-                      SizedBox(width: 10),
-                      Text('Audio Settings'),
-                    ],
-                  ),
-                ),
-              ];
-            },
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          Expanded(
-            child: _isLoading
-                ? Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
+                if (!_isLoading && _pages.isNotEmpty)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
+                    color: Theme.of(context).brightness == Brightness.dark
+                        ? Colors.grey.shade900
+                        : Colors.grey.shade100,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        const CircularProgressIndicator(),
-                        const SizedBox(height: 20),
-                        Text(_loadingMessage, textAlign: TextAlign.center),
+                        IconButton(
+                          icon: const Icon(Icons.arrow_back_ios),
+                          onPressed: _currentPageIndex > 0
+                              ? () => _changePage(_currentPageIndex - 1)
+                              : null,
+                        ),
+                        InkWell(
+                          onTap: _showPageJumper,
+                          child: Padding(
+                            padding: const EdgeInsets.all(8.0),
+                            child: Text(
+                              "Page ${_currentPageIndex + 1} of ${_pages.length}",
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                decoration: TextDecoration.underline,
+                              ),
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.arrow_forward_ios),
+                          onPressed: _currentPageIndex < _pages.length - 1
+                              ? () => _changePage(_currentPageIndex + 1)
+                              : null,
+                        ),
                       ],
                     ),
-                  )
-                : Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: SingleChildScrollView(
-                      controller: _scrollController,
-                      child: _buildInteractiveText(),
-                    ),
                   ),
-          ),
-          if (!_isLoading && _pages.isNotEmpty)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.arrow_back_ios),
-                    onPressed: _currentPageIndex > 0
-                        ? () => _changePage(_currentPageIndex - 1)
-                        : null,
-                  ),
-                  InkWell(
-                    onTap: _showPageJumper,
-                    child: Padding(
-                      padding: const EdgeInsets.all(8.0),
-                      child: Text(
-                        "Page ${_currentPageIndex + 1} of ${_pages.length}",
-                        style: const TextStyle(
-                          fontWeight: FontWeight.bold,
-                          decoration: TextDecoration.underline,
+              ],
+            ),
+
+            // --- TOP APP BAR (Animated) ---
+            AnimatedPositioned(
+              duration: const Duration(milliseconds: 300),
+              top: _controlsVisible ? 0 : -100,
+              left: 0,
+              right: 0,
+              child: AppBar(
+                title: Text(
+                  widget.fileName,
+                  style: const TextStyle(fontSize: 14),
+                ),
+                backgroundColor: Theme.of(context).brightness == Brightness.dark
+                    ? Colors.grey[900]
+                    : Colors.deepPurple,
+                foregroundColor: Colors.white,
+                elevation: 4,
+                actions: [
+                  PopupMenuButton<String>(
+                    icon: const Icon(Icons.more_vert),
+                    onSelected: (value) {
+                      _resetControlsTimer();
+                      switch (value) {
+                        case 'bookmark':
+                          _addBookmark();
+                          break;
+                        case 'save':
+                          _saveToAudioFile();
+                          break;
+                        case 'voice':
+                          _showVoicePicker();
+                          break;
+                        case 'translate':
+                          _showLanguagePicker();
+                          break;
+                        case 'settings':
+                          _showAudioSettings();
+                          break;
+                        case 'timer':
+                          _showSleepTimerDialog();
+                          break;
+                      }
+                    },
+                    itemBuilder: (BuildContext context) => [
+                      const PopupMenuItem(
+                        value: 'bookmark',
+                        child: Row(
+                          children: [
+                            Icon(Icons.bookmark_add, color: Colors.grey),
+                            SizedBox(width: 10),
+                            Text('Bookmark Page'),
+                          ],
                         ),
                       ),
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.arrow_forward_ios),
-                    onPressed: _currentPageIndex < _pages.length - 1
-                        ? () => _changePage(_currentPageIndex + 1)
-                        : null,
+                      const PopupMenuItem(
+                        value: 'save',
+                        child: Row(
+                          children: [
+                            Icon(Icons.save_alt, color: Colors.grey),
+                            SizedBox(width: 10),
+                            Text('Save Audio'),
+                          ],
+                        ),
+                      ),
+                      const PopupMenuItem(
+                        value: 'timer',
+                        child: Row(
+                          children: [
+                            Icon(Icons.timer, color: Colors.grey),
+                            SizedBox(width: 10),
+                            Text('Sleep Timer'),
+                          ],
+                        ),
+                      ),
+                      const PopupMenuItem(
+                        value: 'voice',
+                        child: Row(
+                          children: [
+                            Icon(Icons.record_voice_over, color: Colors.grey),
+                            SizedBox(width: 10),
+                            Text('Select Voice'),
+                          ],
+                        ),
+                      ),
+                      const PopupMenuItem(
+                        value: 'translate',
+                        child: Row(
+                          children: [
+                            Icon(Icons.translate, color: Colors.grey),
+                            SizedBox(width: 10),
+                            Text('Translate'),
+                          ],
+                        ),
+                      ),
+                      const PopupMenuItem(
+                        value: 'settings',
+                        child: Row(
+                          children: [
+                            Icon(Icons.tune, color: Colors.grey),
+                            SizedBox(width: 10),
+                            Text('Audio Settings'),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
             ),
-        ],
-      ),
-      floatingActionButton: _isLoading
-          ? null
-          : Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                FloatingActionButton.small(
-                  heroTag: "stop",
-                  backgroundColor: Colors.red.shade100,
-                  foregroundColor: Colors.red,
-                  onPressed: _stopPlayback,
-                  child: const Icon(Icons.stop),
+
+            // --- BOTTOM CONTROLS (Animated) ---
+            AnimatedPositioned(
+              duration: const Duration(milliseconds: 300),
+              bottom: _controlsVisible ? 20 : -100,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 10,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).brightness == Brightness.dark
+                        ? Colors.grey[800]
+                        : Colors.white,
+                    borderRadius: BorderRadius.circular(30),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.2),
+                        blurRadius: 10,
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.stop, color: Colors.red),
+                        onPressed: _stopPlayback,
+                      ),
+                      const SizedBox(width: 10),
+                      IconButton(
+                        icon: const Icon(Icons.replay_10),
+                        onPressed: _skipBackward,
+                      ),
+                      const SizedBox(width: 10),
+                      FloatingActionButton(
+                        heroTag: "play",
+                        onPressed: _togglePlay,
+                        mini: false,
+                        child: Icon(
+                          _isPlaying ? Icons.pause : Icons.play_arrow,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      IconButton(
+                        icon: const Icon(Icons.forward_10),
+                        onPressed: _skipForward,
+                      ),
+                    ],
+                  ),
                 ),
-                const SizedBox(width: 16),
-                FloatingActionButton.small(
-                  heroTag: "rewind",
-                  onPressed: _skipBackward,
-                  child: const Icon(Icons.replay_10),
-                ),
-                const SizedBox(width: 16),
-                FloatingActionButton.extended(
-                  heroTag: "play",
-                  onPressed: _togglePlay,
-                  icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow),
-                  label: Text(_isPlaying ? "Pause" : "Play"),
-                ),
-                const SizedBox(width: 16),
-                FloatingActionButton.small(
-                  heroTag: "forward",
-                  onPressed: _skipForward,
-                  child: const Icon(Icons.forward_10),
-                ),
-              ],
+              ),
             ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+          ],
+        ),
+      ),
     );
   }
 
@@ -1228,7 +1305,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
       bool isHighlighted =
           _currentWordStart >= wordStart && _currentWordStart < wordEnd;
       bool isBookmarked = _pageBookmarkIndices.contains(wordStart);
-
       if (isBookmarked) {
         spans.add(
           WidgetSpan(
@@ -1254,7 +1330,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
           ),
         );
       }
-
       spans.add(
         TextSpan(
           text: "$word ",
