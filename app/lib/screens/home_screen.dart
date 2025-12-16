@@ -14,7 +14,7 @@ import 'settings_screen.dart';
 import 'history_screen.dart';
 import 'bookmarks_screen.dart';
 import 'stats_screen.dart';
-import 'library_screen.dart';
+import 'library_screen.dart'; // Import the dedicated library screen
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -24,29 +24,35 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  List<FileSystemEntity> _allFiles = [];
-  List<FileSystemEntity> _filteredFiles = [];
+  // We keep a small preview list here
+  List<FileSystemEntity> _recentFiles = [];
+  List<FileSystemEntity> _filteredSheetFiles =
+      []; // Filtered list for the sheet
   bool _isLoading = true;
   bool _hasPermission = false;
+  bool _isNavigatingToLibrary = false; // Prevent double navigation
 
   final TextEditingController _searchController = TextEditingController();
   final ImagePicker _picker = ImagePicker();
-  String _selectedCategory = 'All';
+  String _selectedCategory = 'All'; // Sheet category state
 
   Timer? _sleepTimer;
   Map<String, dynamic>? _dailyWord;
+  final DraggableScrollableController _sheetController =
+      DraggableScrollableController();
 
   @override
   void initState() {
     super.initState();
-    _scanFiles();
     _loadDailyWord();
+    // Check Permissions quietly first. If granted, scan.
     _checkPermissionAndScan(silent: true);
   }
 
   @override
   void dispose() {
     _sleepTimer?.cancel();
+    _sheetController.dispose();
     super.dispose();
   }
 
@@ -75,7 +81,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _loadDailyWord() async {
     var word = await DailyWordService.getTodaysWord();
-    if (mounted) setState(() => _dailyWord = word);
+    if (mounted) {
+      setState(() {
+        _dailyWord = word;
+      });
+    }
   }
 
   Future<void> _scanFiles() async {
@@ -83,16 +93,17 @@ class _HomeScreenState extends State<HomeScreen> {
     var files = await FileScanner.scanDeviceForFiles();
     if (mounted) {
       setState(() {
-        _allFiles = files;
-        _applyFilters();
+        _recentFiles = files;
+        _applySheetFilters(); // Initialize sheet list
         _isLoading = false;
       });
     }
   }
 
-  void _applyFilters() {
-    String keyword = _searchController.text.toLowerCase();
-    List<FileSystemEntity> temp = _allFiles;
+  // --- SHEET FILTER LOGIC ---
+  void _applySheetFilters() {
+    // Only filtering by category here for the preview
+    List<FileSystemEntity> temp = _recentFiles;
 
     if (_selectedCategory == 'Documents') {
       temp = temp.where((f) {
@@ -110,16 +121,8 @@ class _HomeScreenState extends State<HomeScreen> {
       }).toList();
     }
 
-    if (keyword.isNotEmpty) {
-      temp = temp
-          .where(
-            (file) => file.path.split('/').last.toLowerCase().contains(keyword),
-          )
-          .toList();
-    }
-
     setState(() {
-      _filteredFiles = temp;
+      _filteredSheetFiles = temp.take(15).toList(); // Show top 15 in preview
     });
   }
 
@@ -128,12 +131,14 @@ class _HomeScreenState extends State<HomeScreen> {
       type: FileType.custom,
       allowedExtensions: ['pdf', 'txt', 'docx', 'jpg', 'png'],
     );
-    if (result != null)
+    if (result != null) {
       _openReader(result.files.single.path!, result.files.single.name);
+    }
   }
 
   Future<void> _scanDocument() async {
-    if (await Permission.camera.request().isGranted) {
+    var status = await Permission.camera.request();
+    if (status.isGranted) {
       try {
         final XFile? photo = await _picker.pickImage(
           source: ImageSource.camera,
@@ -162,11 +167,34 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // --- NAVIGATION TO FULL LIBRARY ---
+  void _navigateToLibrary() {
+    if (_isNavigatingToLibrary) return;
+    _isNavigatingToLibrary = true;
+
+    // Push the dedicated library screen
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const LibraryScreen()),
+    ).then((_) {
+      _isNavigatingToLibrary = false;
+      // Reset sheet position when coming back so it doesn't stay stuck up
+      if (_sheetController.isAttached) {
+        _sheetController.animateTo(
+          0.4,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
   Future<void> _exitApp() async {
     if (globalAudioHandler != null) await globalAudioHandler!.stop();
     SystemNavigator.pop();
   }
 
+  // --- SLEEP TIMER ---
   void _showSleepTimerDialog() {
     showModalBottomSheet(
       context: context,
@@ -179,13 +207,32 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text(
-                "Set Sleep Timer",
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.deepPurple,
-                ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    "Set Sleep Timer",
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.deepPurple,
+                    ),
+                  ),
+                  if (_sleepTimer != null && _sleepTimer!.isActive)
+                    TextButton(
+                      onPressed: () {
+                        _sleepTimer?.cancel();
+                        Navigator.pop(ctx);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text("Timer Cancelled")),
+                        );
+                      },
+                      child: const Text(
+                        "Cancel",
+                        style: TextStyle(color: Colors.red),
+                      ),
+                    ),
+                ],
               ),
               const SizedBox(height: 10),
               ListTile(
@@ -195,21 +242,14 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               ListTile(
                 leading: const Icon(Icons.timer),
+                title: const Text("20 Minutes"),
+                onTap: () => _setTimer(20, ctx),
+              ),
+              ListTile(
+                leading: const Icon(Icons.timelapse),
                 title: const Text("30 Minutes"),
                 onTap: () => _setTimer(30, ctx),
               ),
-              if (_sleepTimer?.isActive ?? false)
-                ListTile(
-                  leading: const Icon(Icons.cancel, color: Colors.red),
-                  title: const Text(
-                    "Cancel Timer",
-                    style: TextStyle(color: Colors.red),
-                  ),
-                  onTap: () {
-                    _sleepTimer?.cancel();
-                    Navigator.pop(ctx);
-                  },
-                ),
             ],
           ),
         );
@@ -220,13 +260,18 @@ class _HomeScreenState extends State<HomeScreen> {
   void _setTimer(int minutes, BuildContext ctx) {
     _sleepTimer?.cancel();
     Navigator.pop(ctx);
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text("Stopping in $minutes mins")));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text("Audio will stop in $minutes minutes")),
+    );
     _sleepTimer = Timer(Duration(minutes: minutes), () {
       if (globalAudioHandler != null) {
         globalAudioHandler!.pause();
         globalAudioHandler!.stop();
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Sleep Timer: Audio Paused")),
+        );
       }
     });
   }
@@ -247,54 +292,35 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // --- UPDATED "ALIVE" QUICK ACTION ---
   Widget _buildQuickAction(
     IconData icon,
     String label,
     Color color,
     VoidCallback onTap,
   ) {
-    return Card(
-      elevation: 4,
-      shadowColor: color.withValues(alpha: 0.3),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(15),
-        child: Container(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(15),
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                color.withValues(alpha: 0.1),
-                color.withValues(alpha: 0.05),
-              ],
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(15),
+      child: Container(
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(15),
+          border: Border.all(color: color.withValues(alpha: 0.3)),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, size: 32, color: color),
+            const SizedBox(height: 8),
+            Text(
+              label,
+              style: TextStyle(
+                color: color,
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+              ),
             ),
-          ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: color.withValues(alpha: 0.2),
-                ),
-                child: Icon(icon, size: 28, color: color),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                label,
-                style: TextStyle(
-                  color: color,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 12,
-                ),
-              ),
-            ],
-          ),
+          ],
         ),
       ),
     );
@@ -303,29 +329,92 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildCategoryChip(String label) {
     bool isSelected = _selectedCategory == label;
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4.0),
+      padding: const EdgeInsets.only(right: 8.0),
       child: ChoiceChip(
         label: Text(label),
         selected: isSelected,
         onSelected: (bool selected) {
-          if (selected)
+          if (selected) {
             setState(() {
               _selectedCategory = label;
-              _applyFilters();
+              _applySheetFilters();
             });
+          }
         },
         selectedColor: Colors.deepPurple,
         labelStyle: TextStyle(
           color: isSelected ? Colors.white : Colors.deepPurple,
           fontWeight: FontWeight.bold,
         ),
-        backgroundColor: Colors.white,
-        side: BorderSide(
-          color: isSelected
-              ? Colors.transparent
-              : Colors.deepPurple.withValues(alpha: 0.2),
+        backgroundColor: Colors.deepPurple.shade50,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+          side: BorderSide(
+            color: isSelected ? Colors.deepPurple : Colors.deepPurple.shade100,
+          ),
         ),
-        elevation: isSelected ? 2 : 0,
+      ),
+    );
+  }
+
+  Widget _buildWordOfTheDay() {
+    if (_dailyWord == null) return const SizedBox.shrink();
+
+    bool isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 20, top: 10),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: isDark
+            ? Colors.deepPurple.shade900.withValues(alpha: 0.5)
+            : Colors.deepPurple.shade50,
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: Colors.deepPurple.withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                "Word of the Day",
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.deepPurple,
+                ),
+              ),
+              Text(
+                _dailyWord!['language'] ?? 'Unknown',
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontStyle: FontStyle.italic,
+                  color: Colors.grey,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 5),
+          Text(
+            _dailyWord!['word'] ?? '',
+            style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+          ),
+          Text(
+            _dailyWord!['meaning'] ?? '',
+            style: const TextStyle(fontSize: 16, color: Colors.deepPurple),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            "\"${_dailyWord!['example'] ?? ''}\"",
+            style: TextStyle(
+              fontSize: 14,
+              color: isDark ? Colors.grey[300] : Colors.grey[800],
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -351,7 +440,7 @@ class _HomeScreenState extends State<HomeScreen> {
       drawer: _buildDrawer(),
       body: Stack(
         children: [
-          // MAIN CONTENT
+          // --- MAIN BACKGROUND CONTENT ---
           Positioned.fill(
             child: SingleChildScrollView(
               padding: const EdgeInsets.symmetric(horizontal: 16.0),
@@ -359,67 +448,28 @@ class _HomeScreenState extends State<HomeScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const SizedBox(height: 10),
-                  // Word of the Day Widget
-                  if (_dailyWord != null)
-                    Container(
-                      margin: const EdgeInsets.only(bottom: 20, top: 10),
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [
-                            Colors.deepPurple.shade400,
-                            Colors.deepPurple.shade700,
-                          ],
-                        ),
+                  // Search (Navigates to full library)
+                  TextField(
+                    controller: _searchController,
+                    readOnly: true,
+                    onTap:
+                        _navigateToLibrary, // Clicking search also opens library
+                    decoration: InputDecoration(
+                      hintText: 'Search your library...',
+                      prefixIcon: const Icon(Icons.search),
+                      border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(15),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.deepPurple.withValues(alpha: 0.3),
-                            blurRadius: 8,
-                            offset: const Offset(0, 4),
-                          ),
-                        ],
+                        borderSide: BorderSide.none,
                       ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            "Word of the Day",
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white70,
-                            ),
-                          ),
-                          const SizedBox(height: 5),
-                          Text(
-                            _dailyWord!['word'],
-                            style: const TextStyle(
-                              fontSize: 24,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
-                            ),
-                          ),
-                          Text(
-                            _dailyWord!['meaning'],
-                            style: const TextStyle(
-                              fontSize: 16,
-                              color: Colors.white,
-                            ),
-                          ),
-                          const SizedBox(height: 5),
-                          Text(
-                            "\"${_dailyWord!['example']}\"",
-                            style: const TextStyle(
-                              fontSize: 14,
-                              color: Colors.white70,
-                              fontStyle: FontStyle.italic,
-                            ),
-                          ),
-                        ],
-                      ),
+                      filled: true,
+                      fillColor: isDark ? Colors.grey[800] : Colors.grey[200],
+                      contentPadding: const EdgeInsets.symmetric(vertical: 0),
                     ),
+                  ),
 
+                  if (_dailyWord != null) _buildWordOfTheDay(),
+
+                  const SizedBox(height: 10),
                   const Text(
                     "Quick Actions",
                     style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
@@ -469,150 +519,161 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 100), // Space for sheet
+                  const SizedBox(height: 120), // Extra space
                 ],
               ),
             ),
           ),
 
-          // DRAGGABLE LIBRARY SHEET (FIXED: Handle pulls sheet)
-          DraggableScrollableSheet(
-            initialChildSize: 0.4,
-            minChildSize: 0.12,
-            maxChildSize: 0.95,
-            builder: (BuildContext context, ScrollController scrollController) {
-              return Container(
-                decoration: BoxDecoration(
-                  color: isDark ? Colors.grey[900] : Colors.grey[50],
-                  borderRadius: const BorderRadius.vertical(
-                    top: Radius.circular(25),
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      blurRadius: 15,
-                      color: Colors.black.withValues(alpha: 0.2),
-                      spreadRadius: 2,
-                    ),
-                  ],
-                ),
-                child: ListView(
-                  controller:
-                      scrollController, // Single controller for everything ensures drag works everywhere
-                  padding: EdgeInsets.zero,
-                  children: [
-                    // Handle
-                    Center(
-                      child: Container(
-                        margin: const EdgeInsets.only(top: 12, bottom: 8),
-                        width: 50,
-                        height: 5,
-                        decoration: BoxDecoration(
-                          color: Colors.grey[400],
-                          borderRadius: BorderRadius.circular(10),
+          // --- DRAGGABLE LIBRARY SHEET ---
+          NotificationListener<DraggableScrollableNotification>(
+            onNotification: (notification) {
+              // DETECT SCROLL UP to 60%
+              if (notification.extent >= 0.6) {
+                _navigateToLibrary();
+              }
+              return true;
+            },
+            child: DraggableScrollableSheet(
+              controller: _sheetController,
+              initialChildSize: 0.4, // 40% height
+              minChildSize: 0.15, // 15% (Handle visible)
+              maxChildSize:
+                  0.7, // Cap it so user must drag "past" to trigger nav
+              builder:
+                  (BuildContext context, ScrollController scrollController) {
+                    return Container(
+                      decoration: BoxDecoration(
+                        color: isDark ? Colors.grey[900] : Colors.white,
+                        borderRadius: const BorderRadius.vertical(
+                          top: Radius.circular(20),
                         ),
+                        boxShadow: [
+                          BoxShadow(
+                            blurRadius: 10,
+                            color: Colors.black.withValues(alpha: 0.2),
+                          ),
+                        ],
                       ),
-                    ),
-
-                    // Header
-                    Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 20,
-                        vertical: 5,
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      child: Column(
                         children: [
-                          const Text(
-                            "Your Library",
-                            style: TextStyle(
-                              fontSize: 20,
-                              fontWeight: FontWeight.bold,
+                          // Handle
+                          Center(
+                            child: Container(
+                              margin: const EdgeInsets.only(top: 10),
+                              width: 40,
+                              height: 5,
+                              decoration: BoxDecoration(
+                                color: Colors.grey[300],
+                                borderRadius: BorderRadius.circular(10),
+                              ),
                             ),
                           ),
-                          if (!_hasPermission)
-                            TextButton(
-                              onPressed: () => _checkPermissionAndScan(),
-                              child: const Text("Allow Access"),
+                          const SizedBox(height: 10),
+                          // Header
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 20),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text(
+                                  "Your Library",
+                                  style: TextStyle(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                if (!_hasPermission)
+                                  TextButton(
+                                    onPressed: () => _checkPermissionAndScan(),
+                                    child: const Text("Allow Access"),
+                                  ),
+                              ],
                             ),
+                          ),
+
+                          // Categories INSIDE the sheet
+                          SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            padding: const EdgeInsets.symmetric(
+                              vertical: 10,
+                              horizontal: 16,
+                            ),
+                            child: Row(
+                              children: [
+                                _buildCategoryChip('All'),
+                                _buildCategoryChip('Documents'),
+                                _buildCategoryChip('Photos'),
+                              ],
+                            ),
+                          ),
+
+                          const Divider(height: 1),
+
+                          // List
+                          Expanded(
+                            child: !_hasPermission
+                                ? Center(
+                                    child: Column(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: [
+                                        const Icon(
+                                          Icons.lock_outline,
+                                          size: 50,
+                                          color: Colors.grey,
+                                        ),
+                                        const SizedBox(height: 10),
+                                        const Text("Storage permission needed"),
+                                        TextButton(
+                                          onPressed: () =>
+                                              _checkPermissionAndScan(),
+                                          child: const Text("Grant Access"),
+                                        ),
+                                      ],
+                                    ),
+                                  )
+                                : _isLoading
+                                ? const Center(
+                                    child: CircularProgressIndicator(),
+                                  )
+                                : ListView.builder(
+                                    controller: scrollController,
+                                    itemCount: _filteredSheetFiles.length,
+                                    itemBuilder: (context, index) {
+                                      File file =
+                                          _filteredSheetFiles[index] as File;
+                                      String name = file.path.split('/').last;
+
+                                      IconData icon = Icons.insert_drive_file;
+                                      if (name.toLowerCase().endsWith('.pdf'))
+                                        icon = Icons.picture_as_pdf;
+                                      else if (name.toLowerCase().endsWith(
+                                        '.docx',
+                                      ))
+                                        icon = Icons.description;
+                                      else if (name.toLowerCase().endsWith(
+                                        '.jpg',
+                                      ))
+                                        icon = Icons.image;
+
+                                      return ListTile(
+                                        leading: Icon(
+                                          icon,
+                                          color: Colors.deepPurple,
+                                        ),
+                                        title: Text(name),
+                                        onTap: () =>
+                                            _openReader(file.path, name),
+                                      );
+                                    },
+                                  ),
+                          ),
                         ],
                       ),
-                    ),
-
-                    // Categories (Now inside sheet)
-                    SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 10,
-                      ),
-                      child: Row(
-                        children: [
-                          _buildCategoryChip('All'),
-                          _buildCategoryChip('Documents'),
-                          _buildCategoryChip('Photos'),
-                        ],
-                      ),
-                    ),
-                    const Divider(height: 1),
-
-                    // Content
-                    if (!_hasPermission)
-                      Padding(
-                        padding: const EdgeInsets.all(40.0),
-                        child: Column(
-                          children: [
-                            const Icon(
-                              Icons.lock,
-                              size: 40,
-                              color: Colors.grey,
-                            ),
-                            const Text("Permission needed to show files."),
-                          ],
-                        ),
-                      )
-                    else if (_isLoading)
-                      const Padding(
-                        padding: EdgeInsets.all(40.0),
-                        child: Center(child: CircularProgressIndicator()),
-                      )
-                    else if (_filteredFiles.isEmpty)
-                      const Padding(
-                        padding: EdgeInsets.all(40.0),
-                        child: Center(child: Text("No files found.")),
-                      )
-                    else
-                      // Since we are inside a ListView already, we use spread operator or builder logic carefully
-                      // But ListView inside ListView is bad.
-                      // Solution: We are using a single ListView for the whole sheet.
-                      // We map the files to widgets here.
-                      ..._filteredFiles.map((file) {
-                        String name = file.path.split('/').last;
-                        IconData icon = Icons.insert_drive_file;
-                        Color color = Colors.grey;
-                        if (name.endsWith('.pdf')) {
-                          icon = Icons.picture_as_pdf;
-                          color = Colors.red;
-                        } else if (name.endsWith('.docx')) {
-                          icon = Icons.description;
-                          color = Colors.blue;
-                        } else if (name.endsWith('.jpg')) {
-                          icon = Icons.image;
-                          color = Colors.purple;
-                        }
-
-                        return ListTile(
-                          leading: Icon(icon, color: color),
-                          title: Text(name),
-                          onTap: () => _openReader(file.path, name),
-                        );
-                      }).toList(),
-
-                    // Bottom Padding
-                    const SizedBox(height: 80),
-                  ],
-                ),
-              );
-            },
+                    );
+                  },
+            ),
           ),
         ],
       ),
@@ -621,9 +682,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildDrawer() {
     return Drawer(
-      child: ListView(
-        // Changed to ListView to prevent overflow
-        padding: EdgeInsets.zero,
+      child: Column(
         children: [
           const DrawerHeader(
             decoration: BoxDecoration(color: Colors.deepPurple),
@@ -647,10 +706,11 @@ class _HomeScreenState extends State<HomeScreen> {
           ListTile(
             leading: const Icon(Icons.library_books),
             title: const Text('My Library'),
-            onTap: () => Navigator.pop(context),
+            onTap: () => _navigateToLibrary(),
           ),
+
           ListTile(
-            leading: const Icon(Icons.bar_chart),
+            leading: const Icon(Icons.bar_chart, color: Colors.deepPurple),
             title: const Text('Your Progress'),
             onTap: () {
               Navigator.pop(context);
@@ -660,6 +720,7 @@ class _HomeScreenState extends State<HomeScreen> {
               );
             },
           ),
+
           ListTile(
             leading: const Icon(Icons.history),
             title: const Text('History'),
@@ -671,6 +732,7 @@ class _HomeScreenState extends State<HomeScreen> {
               );
             },
           ),
+
           ListTile(
             leading: const Icon(Icons.bookmarks),
             title: const Text('Bookmarks'),
@@ -684,6 +746,7 @@ class _HomeScreenState extends State<HomeScreen> {
               );
             },
           ),
+
           ListTile(
             leading: const Icon(Icons.menu_book),
             title: const Text('Offline Dictionary'),
@@ -697,7 +760,18 @@ class _HomeScreenState extends State<HomeScreen> {
               );
             },
           ),
+
           const Divider(),
+
+          ListTile(
+            leading: const Icon(Icons.timer),
+            title: const Text('Sleep Timer'),
+            onTap: () {
+              Navigator.pop(context);
+              _showSleepTimerDialog();
+            },
+          ),
+
           ListTile(
             leading: const Icon(Icons.settings),
             title: const Text('Settings'),
@@ -717,11 +791,34 @@ class _HomeScreenState extends State<HomeScreen> {
               _showAboutDialog();
             },
           ),
+
           const Divider(),
+
+          // --- EXIT BUTTON ---
           ListTile(
             leading: const Icon(Icons.exit_to_app, color: Colors.red),
-            title: const Text('Exit App', style: TextStyle(color: Colors.red)),
+            title: const Text(
+              'Exit App',
+              style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
+            ),
             onTap: _exitApp,
+          ),
+
+          const Spacer(),
+          const Padding(
+            padding: EdgeInsets.all(20.0),
+            child: Column(
+              children: [
+                Text("v2.1.0", style: TextStyle(color: Colors.grey)),
+                Text(
+                  "Powered by Chiza Labs",
+                  style: TextStyle(
+                    color: Colors.grey,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
       ),

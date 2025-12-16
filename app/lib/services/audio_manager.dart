@@ -1,12 +1,11 @@
 import 'package:audio_service/audio_service.dart';
 
-// 1. GLOBAL ACCESSOR (Fixed: Defined here so HomeScreen can see it)
+// GLOBAL ACCESSOR
 TtsAudioHandler? globalAudioHandler;
 
 class TtsAudioHandler extends BaseAudioHandler {
   static Future<TtsAudioHandler> init() async {
     final handler = TtsAudioHandler();
-    // Assign to global var
     globalAudioHandler = handler;
 
     return await AudioService.init(
@@ -14,16 +13,17 @@ class TtsAudioHandler extends BaseAudioHandler {
       config: const AudioServiceConfig(
         androidNotificationChannelId: 'com.audire.app.channel.audio',
         androidNotificationChannelName: 'Audire Playback',
-        androidNotificationOngoing: true,
+        // FIXED: Set to false to avoid conflict with androidStopForegroundOnPause
+        androidNotificationOngoing: false,
         androidShowNotificationBadge: true,
         androidNotificationIcon: 'mipmap/launcher_icon',
         androidNotificationClickStartsActivity: true,
-        androidStopForegroundOnPause: true,
+        // This ensures the notification stays visible when paused
+        androidStopForegroundOnPause: false,
       ),
     );
   }
 
-  // Fixed Signature: 3 arguments
   void setMediaItem(String title, String contentInfo, Duration duration) {
     mediaItem.add(
       MediaItem(

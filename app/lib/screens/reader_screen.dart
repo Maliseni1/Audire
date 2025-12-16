@@ -8,7 +8,7 @@ import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart
 import 'package:path_provider/path_provider.dart';
 import 'package:audio_session/audio_session.dart';
 import 'package:audio_service/audio_service.dart';
-import 'package:shared_preferences/shared_preferences.dart'; // NEW: For Settings
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io';
 import 'dart:async';
 import '../services/translation_service.dart';
@@ -80,7 +80,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
   String _loadingMessage = "Initializing...";
   bool _isPlaying = false;
 
-  // Settings with Defaults (Will be overwritten by _loadPreferences)
   double _speechRate = 0.5;
   double _pitch = 1.0;
   bool _keepScreenOn = false;
@@ -104,7 +103,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   @override
   void initState() {
     super.initState();
-    _loadPreferences(); // NEW: Load user settings
+    _loadPreferences();
     _setupAudioSystem();
     _loadOrExtractText();
     _resetControlsTimer();
@@ -127,7 +126,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
     super.dispose();
   }
 
-  // --- NEW: LOAD USER PREFERENCES ---
   Future<void> _loadPreferences() async {
     final prefs = await SharedPreferences.getInstance();
     if (mounted) {
@@ -136,11 +134,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
         _pitch = prefs.getDouble('default_pitch') ?? 1.0;
         _keepScreenOn = prefs.getBool('keep_screen_on') ?? false;
       });
-      // Apply initial settings to engine
       await _flutterTts.setSpeechRate(_speechRate);
       await _flutterTts.setPitch(_pitch);
-      // Note: Actual screen wake lock would require 'wakelock_plus' plugin
-      // For now we just store the preference.
     }
   }
 
@@ -164,7 +159,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (_controlsVisible) _resetControlsTimer();
   }
 
-  // --- AUDIO & CONTROLS SETUP ---
+  // --- AUDIO SETUP ---
   Future<void> _setupAudioSystem() async {
     final session = await AudioSession.instance;
     await session.configure(const AudioSessionConfiguration.music());
@@ -195,7 +190,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
     });
 
     await _flutterTts.awaitSpeakCompletion(true);
-    // These calls are redundant with _loadPreferences but safe to keep
     await _flutterTts.setSpeechRate(_speechRate);
     await _flutterTts.setPitch(_pitch);
 
@@ -295,8 +289,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
     return {"title": title, "subtitle": locale, "icon": icon};
   }
 
-  // --- FILE LOGIC & STATS ---
-
   Future<void> _loadOrExtractText() async {
     setState(() {
       _isLoading = true;
@@ -331,9 +323,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       });
       await _loadPageContent(savedPage);
 
-      // STATS: Record book open
       StatsService.recordBookOpen(widget.filePath);
-
       _audioHandler?.setMediaItem(
         widget.fileName,
         "Page ${savedPage + 1} of ${pages.length}",
@@ -389,10 +379,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (newIndex < 0 || newIndex >= _pages.length) return;
     await _flutterTts.stop();
 
-    // STATS: Record page turn
-    if (newIndex > _currentPageIndex) {
-      StatsService.incrementPageCount();
-    }
+    if (newIndex > _currentPageIndex) StatsService.incrementPageCount();
 
     setState(() {
       _currentPageIndex = newIndex;
@@ -721,7 +708,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
         String targetPrefix = 'en';
         if (_currentLang == 'fr') targetPrefix = 'fr';
         if (_currentLang == 'es') targetPrefix = 'es';
-        // 'bem' and 'nya' default to 'en'
 
         List<Map<String, String>> filteredVoices = _voices.where((v) {
           return v['locale']!.toLowerCase().startsWith(targetPrefix);
@@ -735,46 +721,38 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 "Select Voice",
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
               ),
-              const SizedBox(height: 10),
               Expanded(
-                child: filteredVoices.isEmpty
-                    ? const Center(
-                        child: Text("No voices found for this language."),
-                      )
-                    : ListView.builder(
-                        itemCount: filteredVoices.length,
-                        itemBuilder: (c, i) {
-                          var voice = filteredVoices[i];
-                          var displayInfo = _getVoiceDisplayInfo(
-                            voice["name"]!,
-                            voice["locale"]!,
-                          );
+                child: ListView.builder(
+                  itemCount: filteredVoices.length,
+                  itemBuilder: (c, i) {
+                    var voice = filteredVoices[i];
+                    var displayInfo = _getVoiceDisplayInfo(
+                      voice["name"]!,
+                      voice["locale"]!,
+                    );
 
-                          bool isSelected =
-                              _currentVoice != null &&
-                              _currentVoice!['name'] == voice['name'] &&
-                              _currentVoice!['locale'] == voice['locale'];
+                    bool isSelected =
+                        _currentVoice != null &&
+                        _currentVoice!['name'] == voice['name'] &&
+                        _currentVoice!['locale'] == voice['locale'];
 
-                          return ListTile(
-                            leading: Icon(
-                              displayInfo['icon'],
-                              color: Colors.grey,
-                            ),
-                            title: Text(displayInfo['title']),
-                            subtitle: Text(displayInfo['subtitle']),
-                            trailing: isSelected
-                                ? const Icon(
-                                    Icons.check_circle,
-                                    color: Colors.deepPurple,
-                                  )
-                                : null,
-                            onTap: () {
-                              _setVoice(voice);
-                              Navigator.pop(ctx);
-                            },
-                          );
-                        },
-                      ),
+                    return ListTile(
+                      leading: Icon(displayInfo['icon'], color: Colors.grey),
+                      title: Text(displayInfo['title']),
+                      subtitle: Text(displayInfo['subtitle']),
+                      trailing: isSelected
+                          ? const Icon(
+                              Icons.check_circle,
+                              color: Colors.deepPurple,
+                            )
+                          : null,
+                      onTap: () {
+                        _setVoice(voice);
+                        Navigator.pop(ctx);
+                      },
+                    );
+                  },
+                ),
               ),
             ],
           ),
